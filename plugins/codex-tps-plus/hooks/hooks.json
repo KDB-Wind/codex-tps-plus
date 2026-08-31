@@ -1,0 +1,24 @@
+{
+  "description": "Codex throughput display plus delayed TTFT backfill; missing version caches fall back safely through PLUGIN_DATA.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if ! command -v node >/dev/null 2>&1; then printf '{}\\n'; elif [ -f \"${PLUGIN_ROOT}/hooks/collector.mjs\" ]; then node \"${PLUGIN_ROOT}/hooks/collector.mjs\" Stop; elif [ -f \"${PLUGIN_DATA}/runtime/dispatch.mjs\" ]; then node \"${PLUGIN_DATA}/runtime/dispatch.mjs\" collector Stop; else printf '{}\\n'; fi",
+            "commandWindows": "if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Write-Output '{}'; exit 0 }; if (Test-Path -LiteralPath \"$env:PLUGIN_ROOT\\hooks\\collector.mjs\") { node \"$env:PLUGIN_ROOT\\hooks\\collector.mjs\" Stop } elseif (Test-Path -LiteralPath \"$env:PLUGIN_DATA\\runtime\\dispatch.mjs\") { node \"$env:PLUGIN_DATA\\runtime\\dispatch.mjs\" collector Stop } else { Write-Output '{}' }",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "if ! command -v node >/dev/null 2>&1; then printf '{}\\n'; elif [ -f \"${PLUGIN_ROOT}/hooks/backfill.mjs\" ]; then node \"${PLUGIN_ROOT}/hooks/backfill.mjs\" Stop; elif [ -f \"${PLUGIN_DATA}/runtime/dispatch.mjs\" ]; then node \"${PLUGIN_DATA}/runtime/dispatch.mjs\" backfill Stop; else printf '{}\\n'; fi",
+            "commandWindows": "if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Write-Output '{}'; exit 0 }; if (Test-Path -LiteralPath \"$env:PLUGIN_ROOT\\hooks\\backfill.mjs\") { node \"$env:PLUGIN_ROOT\\hooks\\backfill.mjs\" Stop } elseif (Test-Path -LiteralPath \"$env:PLUGIN_DATA\\runtime\\dispatch.mjs\") { node \"$env:PLUGIN_DATA\\runtime\\dispatch.mjs\" backfill Stop } else { Write-Output '{}' }",
+            "async": true,
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

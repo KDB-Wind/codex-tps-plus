@@ -1,0 +1,20 @@
+{
+  "name": "kdb-wind",
+  "interface": {
+    "displayName": "KDB-Wind"
+  },
+  "plugins": [
+    {
+      "name": "codex-tps-plus",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex-tps-plus"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

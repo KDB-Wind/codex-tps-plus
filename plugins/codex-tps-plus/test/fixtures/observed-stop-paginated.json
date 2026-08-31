@@ -1,0 +1,72 @@
+{
+  "fixtureKind": "redacted-live-stop-snapshot",
+  "source": "interactive Codex CLI 0.149.1",
+  "notes": [
+    "Text, filesystem paths, process ids, and identifiers were removed or hashed.",
+    "This is a Stop snapshot; task_complete was observed only in the later final transcript."
+  ],
+  "stop": {
+    "eventName": "Stop",
+    "inputKeys": [
+      "cwd",
+      "hook_event_name",
+      "last_assistant_message",
+      "model",
+      "permission_mode",
+      "session_id",
+      "stop_hook_active",
+      "transcript_path",
+      "turn_id"
+    ],
+    "model": "gpt-5.6-luna",
+    "stopHookActive": false,
+    "lastAssistantMessage": {
+      "present": true,
+      "length": 181
+    },
+    "transcript": {
+      "available": true,
+      "format": "paginated",
+      "lineCount": 22,
+      "recordCount": 22,
+      "parseErrorCount": 0,
+      "currentTurn": {
+        "tokenCountEvents": 2,
+        "taskCompleteEvents": 0
+      },
+      "tokenCounts": [
+        {
+          "lastTokenUsage": {
+            "inputTokens": 16905,
+            "cachedInputTokens": 9984,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 393,
+            "reasoningOutputTokens": 273,
+            "totalTokens": 17298
+          }
+        },
+        {
+          "lastTokenUsage": {
+            "inputTokens": 17515,
+            "cachedInputTokens": 16128,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 90,
+            "reasoningOutputTokens": 21,
+            "totalTokens": 17605
+          }
+        }
+      ]
+    }
+  },
+  "finalTranscript": {
+    "format": "paginated",
+    "lineCount": 23,
+    "recordCount": 23,
+    "parseErrorCount": 0,
+    "taskComplete": {
+      "observedAfterStop": true,
+      "durationMs": 14178,
+      "timeToFirstTokenMs": 7098
+    }
+  }
+}

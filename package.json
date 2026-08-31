@@ -1,0 +1,16 @@
+{
+  "name": "codex-tps-plus-marketplace",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Git marketplace for the Codex TPS Plus plugin.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "test": "npm --prefix plugins/codex-tps-plus test",
+    "doctor": "npm --prefix plugins/codex-tps-plus run doctor",
+    "release:check": "node tools/release-check.mjs"
+  }
+}
