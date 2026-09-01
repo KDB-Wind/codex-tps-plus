@@ -53,6 +53,9 @@
 `npm run release:check` 通过且版本仍为 `0.5.0`；`npm run doctor -- --json` 通过（Node、
 Codex CLI、已安装插件、manifest、Hook、凭据覆盖保护和 OTel 配置检查均为 OK）。
 
+另行执行了隔离的 N1 进程级冒烟（假传输、未连接 daemon/TUI）：故意触发未处理拒绝后，
+probe 返回 `exitCode=1`，summary.errors 含 `unhandled_rejection`，原始错误文本未落盘。
+
 ## 真实 E1 复现命令与人工步骤（pending）
 
 以下命令必须只对人工确认拥有控制权的 daemon/thread 执行，不要填入其他 Codex 会话的
