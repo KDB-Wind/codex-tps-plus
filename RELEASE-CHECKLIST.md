@@ -32,12 +32,14 @@ This repository is release-ready only when every required item below is proven b
 - [x] The repository contains `.agents/plugins/marketplace.json`.
 - [x] The plugin is located at `plugins/codex-tps-plus` and has a valid manifest.
 - [x] Public install and upgrade commands are documented in README.
+- [x] A clean temporary `CODEX_HOME` installs and enables `codex-tps-plus@kdb-wind` version 0.5.0
+      directly from the public `v0.5.0` Git ref.
 - [x] Manifest, root package, and plugin package use the same release version.
 - [x] The release manifest contains no local cachebuster suffix.
 
 ## Quality and safety
 
-- [ ] The full OS/Node test matrix is green in GitHub Actions.
+- [x] The full OS/Node test matrix is green in GitHub Actions.
 - [x] Local unit, Hook contract, privacy, retention, and marketplace release checks pass.
 - [x] No raw transcript, OTLP body, credential, review note, or local absolute path is tracked.
 - [x] OTel reports expose only allowlisted structure and numbers; raw `.bin` files remain explicitly
@@ -48,11 +50,17 @@ This repository is release-ready only when every required item below is proven b
 ## Publishing boundary
 
 - [x] Commit history uses the selected GitHub noreply identity.
-- [ ] The local release candidate is tagged `v0.5.0` at the reviewed commit.
+- [x] The local release candidate is tagged `v0.5.0` at the reviewed commit.
 - [x] The public repository exists and contains the published `v0.4.0` release.
-- [ ] The `v0.5.0` branch/tag and GitHub Release are published.
+- [x] The `v0.5.0` tag and GitHub Release are published from `main`.
 
-The `v0.5.0` tag, push, GitHub Release, and current GitHub Actions matrix remain intentionally
-unchecked until publication is authorized. The corresponding `v0.4.0` Actions matrix and public
-marketplace installation smoke test already passed; local parity for v0.5.0 is checked with
-`npm test` and `npm run release:check` before publication.
+## Published v0.5.0 evidence
+
+- The reviewed `v0.5.0` tag points to `bea3497e5022eb018ee63fa338cd7e7b3ec8ede6`.
+- The [tag matrix](https://github.com/KDB-Wind/codex-tps-plus/actions/runs/33458712669) and
+  [initial main matrix](https://github.com/KDB-Wind/codex-tps-plus/actions/runs/33458712814) passed
+  on Windows, macOS, and Linux with Node.js 22 and 24.
+- The [v0.5.0 GitHub Release](https://github.com/KDB-Wind/codex-tps-plus/releases/tag/v0.5.0)
+  is public and is neither a draft nor a prerelease.
+- A clean public-marketplace smoke test installed version 0.5.0, reported it enabled, validated
+  the installed plugin structure, and returned strict `{}` JSON from the installed Stop collector.
