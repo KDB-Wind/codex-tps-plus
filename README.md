@@ -201,6 +201,10 @@ doctor 会分别检查 receiver 是否仍存活、logs/metrics exporter 是否�
 覆盖；可用 `--config <toml>` 指向等价的检查配置。结束实验后停止 receiver，并删除准确的
 临时捕获目录。
 
+极少数情况下，旧 receiver 退出后其 PID 被系统复用，陈旧的 `receiver.lock` 会被保守地
+判断为“仍有进程存活”。遇到此错误时，先确认没有任何 receiver 正在写入该捕获目录，再只
+删除该目录内的 `receiver.lock` 并重启；receiver 仍在运行时不得删除锁，否则会破坏独占性。
+
 ## 输出示例与解读
 
 完整请求覆盖：

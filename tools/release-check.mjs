@@ -14,11 +14,17 @@ function json(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
 }
 
+function text(relativePath) {
+  return fs.readFileSync(path.join(root, relativePath), "utf8");
+}
+
 const marketplace = json(path.join(".agents", "plugins", "marketplace.json"));
 const manifest = json(path.join("plugins", "codex-tps-plus", ".codex-plugin", "plugin.json"));
 const rootPackage = json("package.json");
 const pluginPackage = json(path.join("plugins", "codex-tps-plus", "package.json"));
 const hooks = json(path.join("plugins", "codex-tps-plus", "hooks", "hooks.json"));
+const changelog = text("CHANGELOG.md");
+const releaseChecklist = text("RELEASE-CHECKLIST.md");
 
 assert.equal(marketplace.name, "kdb-wind");
 assert.equal(marketplace.plugins.length, 1);
@@ -38,6 +44,14 @@ assert.equal(manifest.repository, "https://github.com/KDB-Wind/codex-tps-plus");
 assert.ok(Array.isArray(manifest.interface.defaultPrompt));
 assert.ok(manifest.interface.defaultPrompt.length <= 3);
 assert.doesNotMatch(manifest.version, /\+codex\./);
+assert.match(
+  changelog,
+  new RegExp(`^## ${expectedVersion.replace(/\./g, "\\.")} - \\d{4}-\\d{2}-\\d{2}$`, "m")
+);
+assert.match(
+  releaseChecklist,
+  new RegExp("tagged `v" + expectedVersion.replace(/\./g, "\\.") + "`")
+);
 
 const stopGroups = hooks?.hooks?.Stop;
 assert.deepEqual(Object.keys(hooks?.hooks || {}), ["Stop"]);

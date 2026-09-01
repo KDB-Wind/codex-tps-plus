@@ -6,7 +6,10 @@ This repository is release-ready only when every required item below is proven b
 
 - [x] The automatic line calls the measured value request throughput, not pure generation TPS.
 - [x] TTFT comes from Codex `task_complete.time_to_first_token_ms` and is backfilled asynchronously.
-- [x] Unattributed OTel TBT is labeled as a session reference and never attached to the current turn.
+- [x] Unattributed OTel TBT is labeled as a capture reference or isolated single-turn candidate,
+      always marked unjoined to the current turn.
+- [x] Native OTel capture remains explicit opt-in; production Hooks never start the receiver or
+      modify the user's exporter configuration.
 - [x] Hook failures degrade without steering or extending the model turn.
 
 ## Runtime evidence
@@ -19,6 +22,10 @@ This repository is release-ready only when every required item below is proven b
 - [x] Removed version caches degrade to strict empty JSON instead of a failed Hook.
 - [x] A normal Stop seeds a bounded stable runtime, and display plus TTFT backfill work through it.
 - [x] A later synchronous Stop recovers the previous turn's TTFT if asynchronous backfill was missed.
+- [x] The local receiver is loopback-only, directory-exclusive, atomically written, and bounded by
+      body, payload-count, and total-byte limits.
+- [x] Controlled single-request, multi-request, concurrent-session, flush, transport-signal, and
+      subagent experiments exercise the documented OTel degradation boundaries.
 
 ## Distribution
 
@@ -33,15 +40,19 @@ This repository is release-ready only when every required item below is proven b
 - [ ] The full OS/Node test matrix is green in GitHub Actions.
 - [x] Local unit, Hook contract, privacy, retention, and marketplace release checks pass.
 - [x] No raw transcript, OTLP body, credential, review note, or local absolute path is tracked.
+- [x] OTel reports expose only allowlisted structure and numbers; raw `.bin` files remain explicitly
+      documented as potentially sensitive.
 - [x] MIT license notices exist at repository and plugin-package level.
 - [x] Security reporting guidance is present.
 
 ## Publishing boundary
 
 - [x] Commit history uses the selected GitHub noreply identity.
-- [x] The local release candidate is tagged `v0.4.0`.
-- [ ] The public repository and GitHub Release exist.
+- [ ] The local release candidate is tagged `v0.5.0` at the reviewed commit.
+- [x] The public repository exists and contains the published `v0.4.0` release.
+- [ ] The `v0.5.0` branch/tag and GitHub Release are published.
 
-External repository creation, push, and GitHub Release publication remain intentionally unchecked until
-the repository owner authorizes them. The GitHub Actions item can only be proven after that push; local
-parity is checked by `npm test` and `npm run release:check` before authorization.
+The `v0.5.0` tag, push, GitHub Release, and current GitHub Actions matrix remain intentionally
+unchecked until publication is authorized. The corresponding `v0.4.0` Actions matrix and public
+marketplace installation smoke test already passed; local parity for v0.5.0 is checked with
+`npm test` and `npm run release:check` before publication.

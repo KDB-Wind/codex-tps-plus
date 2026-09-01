@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0 - Unreleased
+## 0.5.0 - 2026-09-01
 
 - Promote the explicit localhost OTLP receiver to `otel.mjs serve`, with an exclusive directory
   lock, bounded raw-capture retention, and receiver identity metadata.
@@ -10,7 +10,8 @@
 - Add doctor checks for the live receiver, matching loopback logs/metrics exporters, and concurrent
   conversation contamination.
 - Record whether TTFT came from direct async backfill or synchronous previous-turn recovery.
-- Prevent older same-version local cachebusters from rolling back the stable Hook runtime.
+- Order same-core local cachebusters by timestamp and keep an unsuffixed source from replacing an
+  active cachebuster in the stable Hook runtime.
 - Document controlled single-request, multi-request, concurrent, flush, transport, and subagent
   experiments on Codex CLI 0.149.1.
 
