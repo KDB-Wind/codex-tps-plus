@@ -380,14 +380,17 @@ export async function runProbe(options = {}) {
   let firstConnection = true;
   let disconnectTimer = null;
   let stopRequested = false;
+  let fatalStopRequested = false;
   const shouldStop = () => stopRequested || Boolean(signal?.aborted);
   const onUncaught = () => {
     stopRequested = true;
+    fatalStopRequested = true;
     state.recordError("uncaught_exception");
     controller?.abort();
   };
   const onUnhandled = () => {
     stopRequested = true;
+    fatalStopRequested = true;
     state.recordError("unhandled_rejection");
     controller?.abort();
   };
@@ -486,7 +489,7 @@ export async function runProbe(options = {}) {
     process.removeListener("SIGINT", onSigint);
     process.removeListener("SIGTERM", onSigterm);
   }
-  if (state.e1Failures.length) exitCode = 1;
+  if (state.e1Failures.length || fatalStopRequested) exitCode = 1;
   const finalized = writer.finalize(state.summary());
   return {
     exitCode,

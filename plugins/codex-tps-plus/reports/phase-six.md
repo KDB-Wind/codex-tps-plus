@@ -113,6 +113,8 @@ node tools/observe-probe.mjs --endpoint $endpoint --out $run --thread-id $thread
 - `cleanupTimeoutMs` 只回收内存，不推断 turn 完成。
 - `interrupted`/`failed`/无终态窗口不进入完成轮或会话速率聚合；partialUsage 只能用于
   token 消耗诊断。
+- 用户主动 abort/信号可正常收尾；`uncaughtException`/`unhandledRejection` 会记录脱敏
+  错误并以 exit code 1 结束，不会被当作成功。
 - initialize 不宣告 `experimentalApi` 或非必要 capability；退订使用短超时且不改变
   观测结论。
 - 输出目录独立于 `PLUGIN_DATA`/`TPS_PLUS_DATA_DIR/status`，summary 使用临时文件加原子
