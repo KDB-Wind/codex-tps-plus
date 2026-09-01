@@ -5,3 +5,7 @@
 {"timestamp":"2026-09-01T01:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"tool","arguments":"{}"}}
 {"timestamp":"2026-09-01T01:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":5,"reasoning_output_tokens":2},"total_token_usage":{"output_tokens":15}}}}
 {"timestamp":"2026-09-01T01:00:05.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-e2"}}
+{"timestamp":"2026-09-01T01:00:05.500Z","type":"event_msg","payload":{"type":"token_count","turn_id":"turn-boundary","info":{"last_token_usage":{"output_tokens":99},"total_token_usage":{"output_tokens":99}}}}
+{"timestamp":"2026-09-01T01:00:10.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-boundary","started_at":1788224410}}
+{"timestamp":"2026-09-02T01:00:10.001Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":7},"total_token_usage":{"output_tokens":7}}}}
+{"timestamp":"2026-09-02T01:00:10.002Z","type":"event_msg","payload":{"type":"task_complete","completed_at":1788310810.002}}

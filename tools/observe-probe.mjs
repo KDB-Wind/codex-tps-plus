@@ -17,6 +17,7 @@ import {
 
 const DEFAULT_DURATION_MS = 60_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_UNSUBSCRIBE_TIMEOUT_MS = 1_000;
 
 function numericOption(value, name, fallback, { minimum = 1 } = {}) {
   if (value === undefined) return fallback;
@@ -28,8 +29,10 @@ function numericOption(value, name, fallback, { minimum = 1 } = {}) {
 export function parseProbeArgs(argv = process.argv.slice(2)) {
   const options = {
     schemaVersion: "v2",
+    schemaVersionSource: "cli_default",
     durationMs: DEFAULT_DURATION_MS,
     requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    unsubscribeTimeoutMs: DEFAULT_UNSUBSCRIBE_TIMEOUT_MS,
     reconnectAttempts: 0,
     reconnectDelayMs: 250,
     disconnectAfterMs: null,
@@ -70,6 +73,7 @@ export function parseProbeArgs(argv = process.argv.slice(2)) {
     "daemon-version",
     "duration-ms",
     "request-timeout-ms",
+    "unsubscribe-timeout-ms",
     "reconnect-attempts",
     "reconnect-delay-ms",
     "disconnect-after-ms",
@@ -86,13 +90,21 @@ export function parseProbeArgs(argv = process.argv.slice(2)) {
   options.endpoint = values.get("endpoint");
   options.out = values.get("out");
   options.threadId = values.get("thread-id") || null;
-  options.schemaVersion = values.get("schema-version") || options.schemaVersion;
+  if (values.has("schema-version")) {
+    options.schemaVersion = values.get("schema-version");
+    options.schemaVersionSource = "cli_argument";
+  }
   options.daemonVersion = values.get("daemon-version") || null;
   options.durationMs = numericOption(values.get("duration-ms"), "duration_ms", options.durationMs);
   options.requestTimeoutMs = numericOption(
     values.get("request-timeout-ms"),
     "request_timeout_ms",
     options.requestTimeoutMs
+  );
+  options.unsubscribeTimeoutMs = numericOption(
+    values.get("unsubscribe-timeout-ms"),
+    "unsubscribe_timeout_ms",
+    options.unsubscribeTimeoutMs
   );
   options.reconnectAttempts = numericOption(
     values.get("reconnect-attempts"),
@@ -147,7 +159,9 @@ export function helpText() {
     "Options:",
     "  --thread-id ID                 Explicitly select a thread when discovery returns multiple threads",
     "  --schema-version VERSION       Protocol schema label; untested labels are capture-only (default: v2)",
+    "  --daemon-version VERSION       Known daemon label; unknown labels set captureSuggested=true",
     "  --duration-ms N                Observation duration (default: 60000)",
+    "  --unsubscribe-timeout-ms N    Short best-effort unsubscribe budget (default: 1000)",
     "  --reconnect-attempts N         Reconnect after an unexpected close (default: 0)",
     "  --disconnect-after-ms N        Deliberately close once, useful for controlled disconnect tests",
     "  --cleanup-timeout-ms N         Memory cleanup delay; never a turn-completion timeout",
@@ -172,14 +186,23 @@ function errorCode(error, fallback = "probe_failed") {
   return fallback;
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function abortPromise(signal) {
-  if (!signal) return new Promise(() => {});
-  if (signal.aborted) return Promise.resolve({ aborted: true });
-  return new Promise((resolve) => signal.addEventListener("abort", () => resolve({ aborted: true }), { once: true }));
+function delay(ms, signal = null) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => finish({ aborted: false }), Math.max(0, ms));
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onAbort);
+      resolve(result);
+    };
+    const onAbort = () => finish({ aborted: true });
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
 }
 
 function waitForConnectionOrDeadline(handle, deadlineMs, signal) {
@@ -217,13 +240,6 @@ function initParams() {
     clientInfo: {
       name: "codex-tps-plus-phase-six-probe",
       version: "phase-six-probe-0.1.0",
-    },
-    capabilities: {
-      experimentalApi: true,
-      requestAttestation: false,
-      mcpServerOpenaiFormElicitation: false,
-      extensions: null,
-      optOutNotificationMethods: null,
     },
   };
 }
@@ -269,9 +285,9 @@ async function makeConnection(state, options, activeHandleRef, transportFactory)
   return handle;
 }
 
-async function requestWithAudit(state, client, method, params) {
+async function requestWithAudit(state, client, method, params, requestOptions = {}) {
   try {
-    return await client.request(method, params);
+    return await client.request(method, params, requestOptions);
   } catch (error) {
     state.recordError(errorCode(error, "rpc_request_failed"));
     throw error;
@@ -337,6 +353,7 @@ export async function runProbe(options = {}) {
   };
   const state = configureStateForRun(new ProbeState({
     schemaVersion: options.schemaVersion || "v2",
+    schemaVersionSource: options.schemaVersionSource || "caller_supplied",
     threadId: options.threadId || null,
     cleanupTimeoutMs: options.cleanupTimeoutMs,
     maxTurns: options.maxTurns,
@@ -353,7 +370,7 @@ export async function runProbe(options = {}) {
     transportSummary,
     usageTerminalVerified: options.usageTerminalVerified,
   });
-  if (options.daemonVersion) state.setDaemonVersion(options.daemonVersion);
+  if (options.daemonVersion) state.setDaemonVersion(options.daemonVersion, "cli_argument");
   const transportFactory = options.transportFactory || ((target, factoryOptions) => createTransport(target, factoryOptions));
   const controller = options.signal ? null : new AbortController();
   const signal = options.signal || controller.signal;
@@ -362,15 +379,20 @@ export async function runProbe(options = {}) {
   let reconnectsUsed = 0;
   let firstConnection = true;
   let disconnectTimer = null;
+  let stopRequested = false;
+  const shouldStop = () => stopRequested || Boolean(signal?.aborted);
   const onUncaught = () => {
+    stopRequested = true;
     state.recordError("uncaught_exception");
     controller?.abort();
   };
   const onUnhandled = () => {
+    stopRequested = true;
     state.recordError("unhandled_rejection");
     controller?.abort();
   };
   const onSignal = (signalName) => {
+    stopRequested = true;
     state.recordError(`signal_${signalName.toLowerCase()}`);
     if (controller) controller.abort();
     else {
@@ -386,12 +408,16 @@ export async function runProbe(options = {}) {
   process.once("SIGINT", onSigint);
   process.once("SIGTERM", onSigterm);
   try {
-    while (Date.now() < deadline) {
+    while (!shouldStop() && Date.now() < deadline) {
       const reconnecting = !firstConnection;
       try {
         const handle = await makeConnection(state, options, activeHandleRef, transportFactory);
         activeHandle = handle;
         await subscribeToThread(state, handle.client, options, reconnecting);
+        if (shouldStop()) {
+          handle.client.close("probe_aborted");
+          break;
+        }
         if (state.e1Failures.length) {
           exitCode = 1;
           handle.client.close("e1_failure");
@@ -414,6 +440,11 @@ export async function runProbe(options = {}) {
             try {
               await requestWithAudit(state, handle.client, "thread/unsubscribe", {
                 threadId: state.selectedThreadId,
+              }, {
+                timeoutMs: options.unsubscribeTimeoutMs ?? Math.min(
+                  options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+                  DEFAULT_UNSUBSCRIBE_TIMEOUT_MS
+                ),
               });
             } catch {
               state.recordError("unsubscribe_failed");
@@ -427,11 +458,13 @@ export async function runProbe(options = {}) {
           break;
         }
         firstConnection = false;
-        if (reconnectsUsed >= (options.reconnectAttempts || 0) || Date.now() >= deadline) break;
+        if (shouldStop() || reconnectsUsed >= (options.reconnectAttempts || 0) || Date.now() >= deadline) break;
         reconnectsUsed += 1;
-        await delay(options.reconnectDelayMs || 0);
+        const delayed = await delay(options.reconnectDelayMs || 0, signal);
+        if (delayed.aborted || shouldStop()) break;
       } catch (error) {
-        if (state.e1Failures.length) exitCode = 1;
+        if (shouldStop()) exitCode = 0;
+        else if (state.e1Failures.length) exitCode = 1;
         else if (error instanceof ProbeControlError && error.code === "multiple_active_threads_requires_thread_id") exitCode = 2;
         else exitCode = 2;
         state.recordError(errorCode(error));
@@ -485,6 +518,8 @@ async function main() {
       summaryPath: result.summaryPath,
       exitCode: result.exitCode,
       captureOnly: result.summary.captureOnly,
+      captureSuggested: result.summary.captureSuggested,
+      schemaVersionSource: result.summary.schemaVersionSource,
       e1Status: result.summary.e1.status,
     })}\n`);
     process.exitCode = result.exitCode;

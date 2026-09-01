@@ -300,16 +300,17 @@ export class JsonRpcClient {
     await this.transport.connect();
   }
 
-  request(method, params = {}) {
+  request(method, params = {}, options = {}) {
     if (this.closed) return Promise.reject(new TransportClosedError("rpc_client_closed"));
     const id = this.nextId++;
     const message = { id, method, params };
     this.beforeSend(method, params);
+    const requestTimeoutMs = finitePositive(options.timeoutMs, this.requestTimeoutMs);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error("rpc_request_timeout"));
-      }, this.requestTimeoutMs);
+      }, requestTimeoutMs);
       this.pending.set(id, { method, resolve, reject, timer });
       try {
         this.transport.send(message);

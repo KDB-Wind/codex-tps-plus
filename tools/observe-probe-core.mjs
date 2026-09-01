@@ -5,6 +5,9 @@ import path from "node:path";
 export const CAPTURE_FORMAT_VERSION = 1;
 export const PROBE_VERSION = "phase-six-probe-0.1.0";
 export const TESTED_SCHEMA_VERSIONS = Object.freeze(["v2"]);
+// This is an observation guard, not a product-version compatibility promise. Add a
+// daemon here only after its app-server notification/response shape has been tested.
+export const TESTED_DAEMON_VERSIONS = Object.freeze(["codex-cli 0.149.1"]);
 
 export const OUTGOING_METHOD_WHITELIST = Object.freeze([
   "initialize",
@@ -399,7 +402,13 @@ export class ProbeCaptureWriter {
       probeVersion: summary.probeVersion,
       runId: summary.runId,
       schemaVersion: summary.schemaVersion,
+      schemaVersionSource: summary.schemaVersionSource,
+      schemaVersionObservedInInitialize: summary.schemaVersionObservedInInitialize,
       captureOnly: summary.captureOnly,
+      captureSuggested: summary.captureSuggested,
+      captureSuggestionReason: summary.captureSuggestionReason,
+      daemonVersion: summary.daemonVersion,
+      daemonVersionSource: summary.daemonVersionSource,
       finishedAt: summary.finishedAt,
       summaryTruncated: true,
       capacity: summary.capacity,
@@ -505,7 +514,15 @@ export class ProbeState {
       : "unknown";
     this.testedSchemaVersions = new Set(options.testedSchemaVersions || TESTED_SCHEMA_VERSIONS);
     this.captureOnly = !this.testedSchemaVersions.has(this.schemaVersion);
+    this.schemaVersionSource = typeof options.schemaVersionSource === "string" && options.schemaVersionSource
+      ? options.schemaVersionSource
+      : "caller_supplied";
+    this.schemaVersionObservedInInitialize = false;
+    this.knownDaemonVersions = new Set(options.knownDaemonVersions || TESTED_DAEMON_VERSIONS);
     this.daemonVersion = null;
+    this.daemonVersionSource = null;
+    this.captureSuggested = true;
+    this.captureSuggestionReason = this.captureOnly ? "schema_untested" : "daemon_version_unknown";
     this.eventSink = typeof options.eventSink === "function" ? options.eventSink : () => {};
     this.onE1Failure = typeof options.onE1Failure === "function" ? options.onE1Failure : () => {};
     this.maxTurns = positiveInteger(options.maxTurns, DEFAULT_MAX_TURNS);
@@ -578,15 +595,35 @@ export class ProbeState {
     this.orphanUsageUpdates = 0;
     this.intermediateUsageUpdatesAfterDisconnect = 0;
     this.memoryCleanupCount = 0;
+    if (options.daemonVersion) this.setDaemonVersion(options.daemonVersion, "constructor_option");
   }
 
   nowMs() {
     return nowFrom(this.clock);
   }
 
-  setDaemonVersion(value) {
+  setDaemonVersion(value, source = this.daemonVersionSource || "unknown") {
     if (typeof value !== "string" || !value) return;
     this.daemonVersion = value.replace(/[^A-Za-z0-9 ._+-]/g, "_").slice(0, 120);
+    this.daemonVersionSource = source;
+    this.updateCaptureSuggestion();
+  }
+
+  setSchemaVersion(value, source = this.schemaVersionSource) {
+    if (typeof value !== "string" || !value) return;
+    this.schemaVersion = value;
+    this.captureOnly = !this.testedSchemaVersions.has(this.schemaVersion);
+    this.schemaVersionSource = source;
+    this.updateCaptureSuggestion();
+  }
+
+  updateCaptureSuggestion() {
+    this.captureSuggested = this.captureOnly || !this.knownDaemonVersions.has(this.daemonVersion);
+    this.captureSuggestionReason = this.captureOnly
+      ? "schema_untested"
+      : this.knownDaemonVersions.has(this.daemonVersion)
+        ? null
+        : "daemon_version_unknown";
   }
 
   setSelectedThreadId(threadId, selectedBy = "argument") {
@@ -615,6 +652,10 @@ export class ProbeState {
       this.cleanupTimers.delete(timer);
       window.items.clear();
       window.items = new Map();
+      window.usageUpdates.length = 0;
+      window.usageFingerprints.clear();
+      window.previousTotal = null;
+      window.latestUsage = null;
       window.memoryCleaned = true;
       this.memoryCleanupCount += 1;
     }, this.cleanupTimeoutMs);
@@ -814,10 +855,10 @@ export class ProbeState {
     if (method === "initialize") {
       this.handshake.initialize.ok = ok;
       if (isObject(result)) {
-        this.setDaemonVersion(result.userAgent);
+        this.setDaemonVersion(result.userAgent, "initialize_response");
         if (typeof result.schemaVersion === "string" && result.schemaVersion) {
-          this.schemaVersion = result.schemaVersion;
-          this.captureOnly = !this.testedSchemaVersions.has(this.schemaVersion);
+          this.schemaVersionObservedInInitialize = true;
+          this.setSchemaVersion(result.schemaVersion, "initialize_response");
         }
       }
     }
@@ -854,7 +895,7 @@ export class ProbeState {
       this.unsubscribe.ok = ok;
       const status = typeof result?.status === "string" ? result.status : null;
       this.unsubscribe.status = status ? safeMethodName(status) : null;
-      this.unsubscribe.ok = ok && ["unsubscribed", "notSubscribed"].includes(status);
+      this.unsubscribe.ok = ok && ["unsubscribed", "notSubscribed", "notLoaded"].includes(status);
       if (ok && status === null) this.recordFieldMismatch(method, "status");
     }
     if (error) this.recordError(normalizeErrorCode(error));
@@ -986,6 +1027,13 @@ export class ProbeState {
       });
     }
     return window.items.get(key);
+  }
+
+  markFirstVisibleDelta(window) {
+    if (!window || window.firstDeltaAtMs !== null) return;
+    const atMs = this.nowMs();
+    window.firstDeltaAtMs = atMs;
+    window.ttftMs = Math.max(0, atMs - window.startedAtMs);
   }
 
   handleNotification(message) {
@@ -1121,11 +1169,7 @@ export class ProbeState {
     if (!entry.started) entry.itemType = "agentMessage";
     window.agentDeltaSeen = true;
     sumLengths(window.agentDeltaLength, appended);
-    const atMs = this.nowMs();
-    if (window.firstDeltaAtMs === null) {
-      window.firstDeltaAtMs = atMs;
-      window.ttftMs = Math.max(0, atMs - window.startedAtMs);
-    }
+    this.markFirstVisibleDelta(window);
     this.recordEvent({ method: "item/agentMessage/delta", classification: "metric-required", threadId, turnId, itemId, length });
     return { handled: true, available: true };
   }
@@ -1149,6 +1193,7 @@ export class ProbeState {
     const length = measureText(delta);
     if (window) {
       window.seenMethods.add(method);
+      this.markFirstVisibleDelta(window);
       if (method === "item/reasoning/textDelta") {
         window.reasoningTextSeen = true;
         sumLengths(window.reasoningTextLength, length);
@@ -1383,7 +1428,7 @@ export class ProbeState {
           available: true,
           label: "TTFT(client)",
           valueMs: window.ttftMs,
-          source: "turn/started-to-first-item/agentMessage/delta",
+          source: "turn/started-to-first-visible-delta",
           scope: "turn",
           notPerRequestAverage: true,
         }
@@ -1464,10 +1509,18 @@ export class ProbeState {
       probeVersion: PROBE_VERSION,
       runId: this.runId,
       schemaVersion: this.schemaVersion,
+      schemaVersionSource: this.schemaVersionSource,
+      schemaVersionObservedInInitialize: this.schemaVersionObservedInInitialize,
       captureOnly: this.captureOnly,
+      captureSuggested: this.captureSuggested,
+      captureSuggestionReason: this.captureSuggestionReason,
+      testedSchemaVersions: [...this.testedSchemaVersions],
+      knownDaemonVersions: [...this.knownDaemonVersions],
+      testedDaemonVersions: [...this.knownDaemonVersions],
       startedAt: safeIso(this.startedAtMs),
       finishedAt: safeIso(finishedAtMs),
       daemonVersion: this.daemonVersion,
+      daemonVersionSource: this.daemonVersionSource,
       transport: this.transportSummary || null,
       handshake: this.handshake,
       discovery: {

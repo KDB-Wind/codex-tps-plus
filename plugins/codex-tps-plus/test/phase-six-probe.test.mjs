@@ -14,6 +14,7 @@ import {
   classifyNotification,
   configureStateForRun,
   measureText,
+  TESTED_DAEMON_VERSIONS,
   prepareRunDirectory,
 } from "../../../tools/observe-probe-core.mjs";
 import {
@@ -26,6 +27,7 @@ import {
 } from "../../../tools/observe-probe-e2.mjs";
 import { parseProbeArgs, runProbe } from "../../../tools/observe-probe.mjs";
 import { JsonRpcClient, JsonRpcTransport, parseEndpoint } from "../../../tools/observe-probe-transport.mjs";
+import { extractStopMetric } from "../scripts/status-core.mjs";
 
 const repoRoot = path.resolve(fileURLToPath(new URL("../../../", import.meta.url)));
 const e2FixturePath = path.join(
@@ -152,6 +154,13 @@ test("resume protocol violation fails closed when excludeTurns is not true", () 
   assert.equal(events.length, 0);
 });
 
+test("unsubscribe accepts the observed notLoaded terminal status", () => {
+  const { state } = makeState();
+  state.recordResponse("thread/unsubscribe", { status: "notLoaded" });
+  assert.equal(state.unsubscribe.status, "notLoaded");
+  assert.equal(state.unsubscribe.ok, true);
+});
+
 test("completed Unicode output compares in memory and reports code points and UTF-8 bytes", () => {
   const { state, advance } = makeState();
   startTurn(state);
@@ -173,6 +182,29 @@ test("completed Unicode output compares in memory and reports code points and UT
   assert.equal(turn.metrics.live.coverage.agentMessage, "matched");
   assert.equal(turn.metrics.ttft.notPerRequestAverage, true);
   assert.equal(state.e1Failures.length, 0);
+});
+
+test("TTFT(client) starts at the first visible reasoning or answer delta", () => {
+  const { state, advance } = makeState();
+  startTurn(state, "turn-reasoning-first");
+  advance(7);
+  state.handleNotification({
+    method: "item/reasoning/textDelta",
+    params: {
+      threadId: "thread-test",
+      turnId: "turn-reasoning-first",
+      itemId: "item-reasoning",
+      delta: "thinking",
+    },
+  });
+  advance(9);
+  completeAgentItem(state, "turn-reasoning-first", "item-answer", "answer");
+  advance(1);
+  completeTurn(state, "turn-reasoning-first");
+  const turn = state.summary().turns[0];
+  assert.equal(turn.metrics.ttft.available, true);
+  assert.equal(turn.metrics.ttft.valueMs, 7);
+  assert.equal(turn.metrics.ttft.source, "turn/started-to-first-visible-delta");
 });
 
 test("optional reasoning notifications do not become an E1 failure", () => {
@@ -271,7 +303,35 @@ test("unknown schema is capture-only and still redacts delta content", () => {
   assert.equal(JSON.stringify(summary).includes("UNKNOWN_SCHEMA_PRIVATE_DELTA"), false);
 });
 
-test("disconnect invalidates an open window and reconnect cannot restore it", () => {
+test("schema capture guidance records the initialize limitation and unknown daemon version", () => {
+  const state = new ProbeState({ schemaVersion: "v2", schemaVersionSource: "cli_argument" });
+  state.setDaemonVersion(TESTED_DAEMON_VERSIONS[0]);
+  let summary = state.summary();
+  assert.equal(summary.captureSuggested, false);
+  assert.equal(summary.captureSuggestionReason, null);
+  assert.equal(summary.schemaVersionObservedInInitialize, false);
+  state.recordResponse("initialize", { userAgent: "codex-cli 9.99.0" });
+  summary = state.summary();
+  assert.equal(summary.daemonVersion, "codex-cli 9.99.0");
+  assert.equal(summary.captureOnly, false);
+  assert.equal(summary.captureSuggested, true);
+  assert.equal(summary.captureSuggestionReason, "daemon_version_unknown");
+  assert.equal(summary.schemaVersionSource, "cli_argument");
+  const responseVersionState = new ProbeState({ schemaVersion: "v2", schemaVersionSource: "cli_argument" });
+  responseVersionState.recordResponse("initialize", {
+    userAgent: TESTED_DAEMON_VERSIONS[0],
+    schemaVersion: "v99",
+  });
+  summary = responseVersionState.summary();
+  assert.equal(summary.schemaVersion, "v99");
+  assert.equal(summary.schemaVersionSource, "initialize_response");
+  assert.equal(summary.schemaVersionObservedInInitialize, true);
+  assert.equal(summary.captureOnly, true);
+  assert.equal(summary.captureSuggested, true);
+  assert.equal(summary.captureSuggestionReason, "schema_untested");
+});
+
+test("disconnect invalidates an open window and reconnect cannot restore it", async () => {
   const { state, advance } = makeState({ cleanupTimeoutMs: 1 });
   startTurn(state, "turn-disconnect");
   state.handleNotification({
@@ -312,6 +372,12 @@ test("disconnect invalidates an open window and reconnect cannot restore it", ()
   assert.equal(summary.connection.reconnected, true);
   assert.equal(summary.connection.intermediateUsageUpdatesAfterDisconnect, 0);
   assert.equal(summary.turns.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const window = state.turns.get("turn-disconnect");
+  assert.equal(window.memoryCleaned, true);
+  assert.equal(window.usageUpdates.length, 0);
+  assert.equal(window.usageFingerprints.size, 0);
+  assert.equal(window.latestUsage, null);
 });
 
 test("interrupted turns expose partialUsage only with explicit terminal usage evidence", () => {
@@ -404,6 +470,8 @@ test("E2 reference uses capturedAt as the duration anchor and stays independent"
   const base = Date.parse("2026-09-01T01:00:00.000Z");
   const at = (offset) => new Date(base + offset).toISOString();
   const reference = computeE2Reference(e2FixturePath, "turn-e2", { nowMs: base + 6_000 });
+  const boundary = computeE2Reference(e2FixturePath, "turn-boundary", { nowMs: base + 86_410_000 });
+  const production = extractStopMetric(e2FixturePath, "turn-e2", { nowMs: base + 6_000 });
   const actual = {
     capturedAt: at(6_000),
     metric: {
@@ -433,7 +501,20 @@ test("E2 reference uses capturedAt as the duration anchor and stays independent"
   });
   assert.equal(compareE2StaticFields(actual, reference).allEqual, true);
   assert.equal(compareE2Duration(actual, reference).equal, true);
+  assert.equal(production.available, true);
+  assert.equal(compareE2StaticFields(production, reference).allEqual, true);
+  assert.equal(compareE2Duration({ capturedAt: at(6_000), metric: production }, reference).equal, true);
+  assert.equal(boundary.available, true);
+  assert.equal(boundary.staticFields.outputTokens, 7);
+  assert.equal(boundary.staticFields.reasoningTokens, null);
+  assert.equal(boundary.staticFields.requestDurationMs, null);
+  assert.equal(boundary.staticFields.estimatedRequestCount, 0);
+  assert.equal(boundary.staticFields.unestimatedRequestCount, 1);
+  assert.equal(boundary.staticFields.tokenCountEvents, 1);
+  assert.equal(boundary.staticFields.toolCallCount, 0);
   const e2Source = fs.readFileSync(path.join(repoRoot, "tools", "observe-probe-e2.mjs"), "utf8");
+  assert.match(e2Source, /^import fs from "node:fs";/m);
+  assert.doesNotMatch(e2Source, /observe-probe-core|observe-probe-|plugins\/|extractStopMetric/);
   assert.doesNotMatch(e2Source, /status-core|extractStopMetric/);
 });
 
@@ -646,6 +727,10 @@ test("runner performs only allowed sends and keeps real E1 status pending", asyn
   });
   assert.equal(result.exitCode, 0);
   assert.equal(result.summary.e1.status, "pending");
+  assert.equal(result.summary.daemonVersionSource, "initialize_response");
+  assert.equal(result.summary.captureSuggested, false);
+  const initialize = fake.sent.find((message) => message.method === "initialize");
+  assert.equal(Object.hasOwn(initialize.params, "capabilities"), false);
   assert.deepEqual(fake.sent.map((message) => message.method), [
     "initialize",
     "initialized",
@@ -657,6 +742,68 @@ test("runner performs only allowed sends and keeps real E1 status pending", asyn
   assert.equal(result.summary.turns[0].metrics.live.available, true);
   const capture = fs.readFileSync(path.join(result.runDirectory, "events.ndjson"), "utf8");
   assert.equal(capture.includes("ok"), false);
+  fs.rmSync(temp, { recursive: true, force: true });
+});
+
+test("runner abort interrupts reconnect backoff before opening another connection", async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-phase-six-reconnect-abort-"));
+  const controller = new AbortController();
+  const transports = [];
+  class CloseAfterResumeTransport {
+    constructor() {
+      this.sent = [];
+      this.closed = false;
+      this.onMessage = () => {};
+      this.onClose = () => {};
+      this.onError = () => {};
+    }
+
+    async connect() {}
+
+    send(message) {
+      this.sent.push(message);
+      if (message.method === "initialize") {
+        queueMicrotask(() => this.onMessage({
+          id: message.id,
+          result: { userAgent: "codex-cli 0.149.1" },
+        }));
+      } else if (message.method === "thread/loaded/list") {
+        queueMicrotask(() => this.onMessage({ id: message.id, result: { data: ["thread-live"] } }));
+      } else if (message.method === "thread/resume") {
+        queueMicrotask(() => {
+          this.onMessage({ id: message.id, result: { thread: { id: "thread-live", turns: [] } } });
+          setTimeout(() => this.close("unexpected_close"), 1);
+        });
+      }
+    }
+
+    close(reason) {
+      if (this.closed) return;
+      this.closed = true;
+      this.onClose(reason || "fake_closed");
+    }
+  }
+  const transportFactory = () => {
+    const transport = new CloseAfterResumeTransport();
+    transports.push(transport);
+    return transport;
+  };
+  const abortTimer = setTimeout(() => controller.abort(), 20);
+  const result = await runProbe({
+    endpoint: "ws://127.0.0.1:4319",
+    out: path.join(temp, "run"),
+    durationMs: 500,
+    requestTimeoutMs: 100,
+    reconnectAttempts: 1,
+    reconnectDelayMs: 100,
+    maxBytes: 16_384,
+    signal: controller.signal,
+    transportFactory,
+  });
+  clearTimeout(abortTimer);
+  assert.equal(result.exitCode, 0);
+  assert.equal(transports.length, 1);
+  assert.equal(transports[0].sent.filter((message) => message.method === "initialize").length, 1);
   fs.rmSync(temp, { recursive: true, force: true });
 });
 
@@ -713,9 +860,12 @@ test("CLI argument parser requires endpoint and output and exposes capture-only 
     "--endpoint", "unix:///tmp/codex.sock",
     "--out", "capture",
     "--schema-version", "v99",
+    "--unsubscribe-timeout-ms", "7",
     "--usage-terminal-verified",
   ]);
   assert.equal(options.schemaVersion, "v99");
+  assert.equal(options.schemaVersionSource, "cli_argument");
+  assert.equal(options.unsubscribeTimeoutMs, 7);
   assert.equal(options.usageTerminalVerified, true);
 });
 
@@ -736,4 +886,23 @@ test("JsonRpcClient handles a synchronous fake response after registering the pe
   const result = await client.request("initialize", {});
   assert.deepEqual(result, { ok: true });
   assert.equal(sent[0].method, "initialize");
+});
+
+test("JsonRpcClient supports a short per-request timeout for best-effort unsubscribe", async () => {
+  const transport = {
+    onMessage: () => {},
+    onClose: () => {},
+    onError: () => {},
+    connect: async () => {},
+    send() {},
+    close() {},
+  };
+  const client = new JsonRpcClient(transport, { requestTimeoutMs: 200 });
+  const startedAt = Date.now();
+  await assert.rejects(
+    client.request("thread/unsubscribe", {}, { timeoutMs: 5 }),
+    /rpc_request_timeout/
+  );
+  assert.equal(Date.now() - startedAt < 100, true);
+  client.close("test_closed");
 });
