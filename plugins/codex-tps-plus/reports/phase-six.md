@@ -51,7 +51,7 @@
   聚合实现；
 - loopback 端点校验、同步 JSON-RPC 响应、正常 runner 发送序列和 server request 路由。
 
-本次自动化命令结果：`npm test` 81/81 通过；phase-six 专项测试 29/29 通过；
+本次自动化命令结果：`npm test` 82/82 通过；phase-six 专项测试 30/30 通过；
 `npm run release:check` 通过且版本仍为 `0.5.0`；`npm run doctor -- --json` 通过（Node、
 Codex CLI、已安装插件、manifest、Hook、凭据覆盖保护和 OTel 配置检查均为 OK）。
 
@@ -96,7 +96,7 @@ Initialize 返回值为复合 `userAgent`，探针只提取稳定的 `codex-tui 
 人工按顺序执行：普通纯文本轮、工具调用轮、一个受控审批轮；确认 TUI 输入和渲染正常，
 并检查 summary 中 `serverRequests` 为空、`resume.excludeTurns` 为 `true`、thread ID
 不变、没有额外 turn/fork/replay。若观察者收到审批、用户输入、工具调用或认证刷新请求，
-探针必须立即退出；随后记录 TUI 是否被阻塞或接管，这种情形判 E1 失败。
+探针必须立即退出；随后记录 TUI 是否继续可用，这种情形判 E1 失败。
 
 ## 本次真实 E1 记录（2026-09-01，失败）
 
@@ -127,8 +127,10 @@ Initialize 返回值为复合 `userAgent`，探针只提取稳定的 `codex-tui 
 
 探针没有回答 server request，也没有把命令参数写入产物；用户在真实 TUI 权限卡片上
 选择了 `No ... (Esc)`，随后确认卡片消失且 approval marker 文件不存在。因此该结果是
-真实的 E1 失败证据，不是权限卡片缺失或模拟通过。按照 rev4.2 的判定边界，本阶段不再
-启动 E2；`e2.status` 保持 `pending`，没有真实 E2 数值或性能结论。
+真实的 E1 失败证据，不是权限卡片缺失或模拟通过。协议定性为 App Server 没有被动
+订阅者角色，审批请求会扇出给订阅客户端；不将其描述为 `thread/resume` 接管控制。
+按照 rev4.2 的判定边界，本阶段不再启动 E2；`e2.status` 保持 `pending`，没有真实
+E2 数值或性能结论。
 
 断连/重连场景使用独立新目录：
 
