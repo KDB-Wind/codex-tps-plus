@@ -1,7 +1,7 @@
 {
   "name": "codex-tps-plus",
-  "version": "0.4.0",
-  "description": "Show Codex CLI delayed TTFT, request throughput including TTFT, and end-to-end turn throughput.",
+  "version": "0.5.0",
+  "description": "Show delayed TTFT and throughput, with an opt-in native OTel TBT reference.",
   "author": {
     "name": "KDB-Wind",
     "url": "https://github.com/KDB-Wind"
@@ -14,7 +14,7 @@
   "interface": {
     "displayName": "Codex TPS Plus",
     "shortDescription": "Delayed TTFT plus request and whole-turn throughput for Codex CLI.",
-    "longDescription": "Shows delayed turn TTFT, model-request throughput including TTFT, and end-to-end turn throughput after Codex CLI responses; stores only redacted numeric session metrics and never labels unjoinable OTel TBT as current-turn TPS.",
+    "longDescription": "Shows delayed turn TTFT, model-request throughput including TTFT, and end-to-end turn throughput after Codex CLI responses. An explicit localhost OTel experiment can add a native TBT-derived reference, but unjoinable telemetry is never labeled as current-turn TPS.",
     "developerName": "KDB-Wind",
     "category": "Productivity",
     "capabilities": [

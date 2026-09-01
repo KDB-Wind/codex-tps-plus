@@ -17,7 +17,11 @@ import {
   requestRate,
   weightedRate,
 } from "../scripts/metric-model.mjs";
-import { selectPluginInstallation } from "../scripts/doctor-core.mjs";
+import {
+  assessOtelCaptureIsolation,
+  assessOtelExporter,
+  selectPluginInstallation,
+} from "../scripts/doctor-core.mjs";
 
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const fixture = (name) => path.join(root, "test", "fixtures", name);
@@ -220,6 +224,65 @@ test("doctor prefers the installation matching the running plugin version", () =
     "0.4.0"
   );
   assert.equal(selected.pluginId, "codex-tps-plus@kdb-wind");
+});
+
+test("doctor rejects an enabled installation from an older semver release", () => {
+  const selected = selectPluginInstallation(
+    [
+      {
+        pluginId: "codex-tps-plus@personal",
+        name: "codex-tps-plus",
+        version: "0.4.0",
+        installed: true,
+        enabled: true,
+      },
+    ],
+    "0.5.0"
+  );
+  assert.equal(selected, null);
+});
+
+test("doctor separates receiver exclusivity from conversation isolation", () => {
+  const isolated = assessOtelCaptureIsolation({
+    receiver: { active: true, receiverIdCount: 1 },
+    captureIsolation: { level: "single-conversation-observed", distinctConversationCount: 1 },
+  });
+  assert.equal(isolated.receiverExclusive, true);
+  assert.equal(isolated.concurrentContamination, false);
+  assert.equal(isolated.singleTurnCandidateEligible, false);
+
+  const contaminated = assessOtelCaptureIsolation({
+    receiver: { active: true, receiverIdCount: 1 },
+    captureIsolation: { level: "concurrent-conversations-observed", distinctConversationCount: 2 },
+  });
+  assert.equal(contaminated.concurrentContamination, true);
+  assert.equal(contaminated.singleTurnCandidateEligible, false);
+});
+
+test("doctor requires a loopback metrics exporter matching the receiver", () => {
+  const matching = assessOtelExporter(
+    {
+      metricsExporter: "otlp-http",
+      metricsEndpoint: "http://127.0.0.1:4318/v1/metrics",
+      metricsEndpointLoopback: true,
+      exporter: "otlp-http",
+      exporterEndpoint: "http://127.0.0.1:4318/v1/logs",
+      exporterEndpointLoopback: true,
+    },
+    { endpoint: "http://127.0.0.1:4318" }
+  );
+  assert.equal(matching.configured, true);
+  assert.equal(matching.matchesReceiver, true);
+  assert.equal(matching.logsMatchReceiver, true);
+  const remote = assessOtelExporter(
+    {
+      metricsExporter: "otlp-http",
+      metricsEndpoint: "https://collector.example/v1/metrics",
+      metricsEndpointLoopback: false,
+    },
+    { endpoint: "http://127.0.0.1:4318" }
+  );
+  assert.equal(remote.matchesReceiver, false);
 });
 
 test("probe report ignores unrelated JSON files", () => {

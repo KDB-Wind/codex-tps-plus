@@ -3,7 +3,8 @@
 [![test](https://github.com/KDB-Wind/codex-tps-plus/actions/workflows/test.yml/badge.svg)](https://github.com/KDB-Wind/codex-tps-plus/actions/workflows/test.yml)
 
 为 Codex CLI 在每轮回复结束后显示“请求区间吞吐”“整轮吞吐”，并延迟回填 TTFT 的
-本地插件。
+本地插件。v0.5.0 另提供显式启用的 localhost OTel 实验，可读取 Codex 原生 TBT 并给出
+严格标注、未归轮的生成速度参考。
 
 ```text
 ⚡ 请求内吞吐 41.6 tok/s（含首字） · 会话请求内 39.8 tok/s · 整轮 33.3 tok/s · 输出 5.2k tok · 轮耗时 2m36s · 上轮 TTFT 6.8s
@@ -152,6 +153,54 @@ node plugins/codex-tps-plus/scripts/status.mjs --otel-capture <otel-capture-dire
 也可在启动 Codex 前设置 `TPS_PLUS_OTEL_CAPTURE_DIR`，让 `$tps` 读取该目录。此选项不会
 启动接收器或修改 Codex 配置；原始 `.bin` 仍应视为敏感数据。
 
+### 可选：原生 TBT 捕获实验
+
+普通使用者不需要启用本节。它适合希望观察 Codex 原生 engine timing、并接受本地原始
+OTLP 数据风险的高级用户。生产 Stop Hook 永远不会启动接收器或修改配置。
+
+先用固定的 localhost 端口启动独占接收器：
+
+```powershell
+$capture = Join-Path $env:TEMP "codex-tps-plus-otel"
+node plugins/codex-tps-plus/scripts/otel.mjs serve --output-dir $capture --port 4318
+```
+
+接收器只监听 `127.0.0.1`，同一目录只允许一个进程写入；默认单个 body 不超过 64 MiB，
+最多保留 1000 个 payload、合计 512 MiB。新开一个 PowerShell，使用仅对本次 Codex 进程
+生效的配置覆盖：
+
+```powershell
+$env:TPS_PLUS_OTEL_CAPTURE_DIR = Join-Path $env:TEMP "codex-tps-plus-otel"
+codex `
+  -c 'otel.log_user_prompt=false' `
+  -c 'otel.exporter={otlp-http={endpoint="http://127.0.0.1:4318/v1/logs",protocol="binary"}}' `
+  -c 'otel.metrics_exporter={otlp-http={endpoint="http://127.0.0.1:4318/v1/metrics",protocol="binary"}}'
+```
+
+完成一轮后，`$tps` 会附加类似：
+
+```text
+原生生成 TPS ≈55.7（TBT 推算·单轮候选·未归轮）
+```
+
+这里的“单轮候选”只在一个 receiver identity、一个 conversation、一个完成 turn 的新鲜
+捕获中出现；否则固定降级为“捕获参考”。两者的 `currentTurnAttributed` 都是 `false`。
+`service TBT` 是 histogram：多请求可能合并为一个点，`count` 才是 observation 数；其倒数
+是请求均值的近似值，不保证等于按输出 token 加权的精确 TPS。少于 128 个 turn 输出 token
+时还会标记“短输出”，因为实测 5-token 回复的倒数从长回复约 55.7 降到约 9.3。
+
+诊断显式捕获时可以运行：
+
+```powershell
+node plugins/codex-tps-plus/scripts/doctor.mjs --otel-capture $env:TPS_PLUS_OTEL_CAPTURE_DIR --json
+node plugins/codex-tps-plus/scripts/otel.mjs scan $env:TPS_PLUS_OTEL_CAPTURE_DIR
+```
+
+doctor 会分别检查 receiver 是否仍存活、logs/metrics exporter 是否指向它，以及捕获中是否
+出现多个 conversation。若配置只通过本次 `codex -c` 覆盖，独立 doctor 进程无法看到这些
+覆盖；可用 `--config <toml>` 指向等价的检查配置。结束实验后停止 receiver，并删除准确的
+临时捕获目录。
+
 ## 输出示例与解读
 
 完整请求覆盖：
@@ -239,8 +288,9 @@ Codex 在同步 Stop 完成后才把 `task_complete.time_to_first_token_ms` 写�
 ### 为什么 OTel 参考仍不叫本轮 TPS
 
 OTel service TBT 是真实的 Codex engine timing，但当前验证样本没有可稳定关联到 Stop 的
-request/turn ID，且导出是异步批量的。插件只把显式捕获的倒数换算值标成
-`OTel 会话参考（未归轮）`。
+request/turn ID。多请求被合并进 histogram，指标又在进程结束附近批量 flush；窗口时间是
+聚合边界，不是逐 token 到达时刻。插件只把显式捕获的倒数换算值标成“捕获参考”或
+“单轮候选”，并始终带“未归轮”。
 
 ## 开发与验证
 
@@ -251,6 +301,7 @@ cd plugins/codex-tps-plus
 node scripts/doctor.mjs --json
 node scripts/analyze-transcript.mjs <transcript.jsonl>
 node scripts/otel.mjs config
+node scripts/otel.mjs serve --output-dir <capture-directory> --port 4318
 node scripts/otel.mjs scan <otel-capture-directory>
 node scripts/otel-inspect.mjs <otel-capture-directory>
 node scripts/status.mjs --otel-capture <otel-capture-directory> --json
@@ -259,20 +310,22 @@ node scripts/status.mjs --otel-capture <otel-capture-directory> --json
 仓库根目录是 marketplace，插件本体位于 `plugins/codex-tps-plus`。GitHub Actions 在
 Windows、macOS、Linux 上分别使用 Node.js 22 和 24 运行测试与发布检查。
 
-仓库仍保留第一阶段的脱敏 transcript 探针与 localhost OTLP 接收器，供开发者验证未来
-Codex 版本。它们不属于生产 Hook 注册项，也不会自动启用。
+仓库保留第一阶段的脱敏 transcript 探针，并将 localhost OTLP 接收器作为显式实验子命令。
+它们不属于生产 Hook 注册项，也不会自动启用。
 
 OTLP 原始 `.bin` 可能包含 prompt、工具或其他敏感属性。接收器只监听 `127.0.0.1`，但
 这不等于内容已脱敏；实验结束后应删除准确的捕获目录，绝不能提交 `artifacts/otel/`。
 结构化检查器只输出允许列出的结构、名称和数字，它不能证明原始 body 安全。
 
-已验证样本中的原生 OTel TBT/TTFT 为异步批量指标，且没有可与当前 Stop 稳定关联的
-request/turn ID，因此运行时不会把 `1000 / TBT_ms` 冒充当前轮 TPS。
+已验证样本中的原生 OTel TBT/TTFT 为异步批量 histogram，且没有可与当前 Stop 稳定关联的
+request/turn ID，因此运行时不会把 `1000 / TBT_ms` 冒充当前轮 TPS。日志中同时出现 SSE
+和 WebSocket 命名信号，而 0.149.1 的相关切换 feature 已移除，插件不会据此伪造传输类型。
 
 详细证据见 [第一阶段验证报告](plugins/codex-tps-plus/reports/validation.md)、
 [第二阶段实现说明](plugins/codex-tps-plus/reports/phase-two.md)、
 [第三阶段请求区间吞吐说明](plugins/codex-tps-plus/reports/phase-three.md) 和
-[第四阶段延迟 TTFT 说明](plugins/codex-tps-plus/reports/phase-four.md)。
+[第四阶段延迟 TTFT 说明](plugins/codex-tps-plus/reports/phase-four.md) 和
+[第五阶段 OTel 实验报告](plugins/codex-tps-plus/reports/phase-five.md)。
 
 ## 官方参考
 

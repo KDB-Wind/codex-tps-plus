@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const pluginRoot = path.join(root, "plugins", "codex-tps-plus");
-const expectedVersion = "0.4.0";
+const expectedVersion = "0.5.0";
 
 function json(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));

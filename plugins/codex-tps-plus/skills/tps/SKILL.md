@@ -36,5 +36,7 @@ is already a subset of `output_tokens` and must not be added again.
 When the user asks about native OTel, explain that Codex service TBT can be converted
 with `1000 / TBT_ms`, but OTLP metrics are batch-exported and carry no request/turn ID
 in the verified capture, so the Stop hook cannot safely attach them to the current turn. If
-`nativeOtel` is present, label it as an unattributed capture/session reference, never current-turn
-or exact per-request TPS.
+`nativeOtel` is present, report its `confidence` exactly: `capture-aggregate` is a capture reference;
+`isolated-window-candidate` means one receiver identity, one conversation, and one completed turn.
+Both remain unattributed to the live Stop and are never current-turn or exact per-request TPS.
+Mention `shortOutputReference` when true because very short outputs can make reciprocal TBT unstable.

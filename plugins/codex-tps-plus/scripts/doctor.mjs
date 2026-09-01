@@ -5,7 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { selectPluginInstallation } from "./doctor-core.mjs";
+import {
+  assessOtelCaptureIsolation,
+  assessOtelExporter,
+  selectPluginInstallation,
+} from "./doctor-core.mjs";
+import { inspectOtelCapture } from "./otel-inspect.mjs";
 import { inspectOtelConfig } from "./otel.mjs";
 
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -64,6 +69,11 @@ function loadJson(file) {
   }
 }
 
+function option(name) {
+  const index = process.argv.indexOf(name);
+  return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : null;
+}
+
 const results = [];
 const manifest = loadJson(manifestPath);
 const [major, minor] = process.versions.node.split(".").map(Number);
@@ -117,7 +127,7 @@ results.push(
 );
 
 const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
-const userConfig = path.join(codexHome, "config.toml");
+const userConfig = path.resolve(option("--config") || path.join(codexHome, "config.toml"));
 let configText = "";
 try {
   configText = fs.readFileSync(userConfig, "utf8");
@@ -143,6 +153,64 @@ results.push(
     "OTel is opt-in; use the local receiver only for an explicit feasibility run."
   )
 );
+
+const otelCapture = option("--otel-capture") || process.env.TPS_PLUS_OTEL_CAPTURE_DIR?.trim();
+if (otelCapture) {
+  let capture = null;
+  try {
+    capture = inspectOtelCapture(path.resolve(otelCapture));
+  } catch {}
+  const exporter = assessOtelExporter(otel, capture?.receiver);
+  const isolation = assessOtelCaptureIsolation(capture);
+  results.push(
+    check(
+      "OTel local receiver",
+      isolation.receiverExclusive,
+      isolation.receiverExclusive
+        ? "active, loopback-only, and the capture has one receiver identity"
+        : capture?.directoryPresent
+          ? "not active or the capture has multiple receiver identities"
+          : "capture directory unavailable",
+      "Start one explicit local receiver for this capture directory; production hooks never start it automatically."
+    )
+  );
+  results.push(
+    check(
+      "OTel logs exporter",
+      exporter.logsMatchReceiver,
+      exporter.logsMatchReceiver
+        ? "configured loopback endpoint matches the active receiver"
+        : exporter.logsConfigured
+          ? "configured endpoint does not match the active receiver"
+          : "logs exporter is not configured",
+      "The logs stream is required to detect concurrent conversations; keep log_user_prompt=false."
+    )
+  );
+  results.push(
+    check(
+      "OTel metrics exporter",
+      exporter.matchesReceiver,
+      exporter.matchesReceiver
+        ? "configured loopback endpoint matches the active receiver"
+        : exporter.configured
+          ? "configured endpoint does not match the active receiver"
+          : "metrics exporter is not configured",
+      "Point [otel].metrics_exporter at the receiver's /v1/metrics endpoint for the experiment."
+    )
+  );
+  results.push(
+    check(
+      "OTel capture isolation",
+      !isolation.concurrentContamination,
+      isolation.concurrentContamination
+        ? `contaminated; ${capture?.captureIsolation?.distinctConversationCount || 0} conversations or multiple receivers observed`
+        : `${isolation.conversationIsolation}; this does not prove single-turn attribution`,
+      isolation.concurrentContamination
+        ? "Use a fresh capture directory and ensure only one Codex session exports to it."
+        : null
+    )
+  );
+}
 
 const report = { doctorVersion: 1, root, checks: results, failed: results.filter((item) => !item.ok).length };
 if (process.argv.includes("--json")) {

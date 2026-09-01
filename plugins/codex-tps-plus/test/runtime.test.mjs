@@ -227,3 +227,39 @@ test("an older surviving plugin root cannot roll the stable runtime back", () =>
   assert.equal(active.snapshot, newer.fingerprint);
   fs.rmSync(temp, { recursive: true, force: true });
 });
+
+test("an older same-version cachebuster cannot roll the stable runtime back", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-runtime-cachebuster-"));
+  const pluginRoot = path.join(temp, "plugin");
+  const pluginData = path.join(temp, "plugin-data");
+  const manifestPath = path.join(pluginRoot, ".codex-plugin", "plugin.json");
+  fs.cpSync(root, pluginRoot, { recursive: true });
+
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  fs.writeFileSync(
+    manifestPath,
+    `${JSON.stringify({ ...manifest, version: "0.5.0+codex.20260901020000" })}\n`
+  );
+  fs.appendFileSync(path.join(pluginRoot, "scripts", "status-core.mjs"), "\n// newer cachebuster\n");
+  const newer = ensureStableRuntime({ pluginRoot, pluginData });
+
+  fs.writeFileSync(
+    manifestPath,
+    `${JSON.stringify({ ...manifest, version: "0.5.0+codex.20260901010000" })}\n`
+  );
+  fs.appendFileSync(path.join(pluginRoot, "scripts", "status-core.mjs"), "\n// older cachebuster\n");
+  const older = ensureStableRuntime({ pluginRoot, pluginData });
+  assert.equal(older.activated, false);
+
+  fs.writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, version: "0.5.0" })}\n`);
+  fs.appendFileSync(path.join(pluginRoot, "scripts", "status-core.mjs"), "\n// unsuffixed source\n");
+  const unsuffixed = ensureStableRuntime({ pluginRoot, pluginData });
+  assert.equal(unsuffixed.activated, false);
+
+  const active = JSON.parse(
+    fs.readFileSync(path.join(pluginData, "runtime", "active.json"), "utf8")
+  );
+  assert.equal(active.version, "0.5.0+codex.20260901020000");
+  assert.equal(active.snapshot, newer.fingerprint);
+  fs.rmSync(temp, { recursive: true, force: true });
+});

@@ -57,6 +57,7 @@ export async function waitAndBackfill(input, options = {}) {
         sessionId: input?.session_id,
         turnId: input?.turn_id,
         completion,
+        timingSource: "task_complete_async",
       });
       if (result.updated || result.reason === "already_backfilled") return result;
       lastReason = result.reason;

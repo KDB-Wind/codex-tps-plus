@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const STATUS_SCHEMA_VERSION = 4;
+const STATUS_SCHEMA_VERSION = 5;
 const SHORT_RESPONSE_TOKENS_PER_REQUEST = 128;
 const INITIAL_TAIL_BYTES = 256 * 1024;
 const MAX_TAIL_BYTES = 16 * 1024 * 1024;
@@ -504,7 +504,7 @@ function readStatusRecords(directory) {
     try {
       const record = JSON.parse(fs.readFileSync(entry.file, "utf8"));
       if (
-        [1, 2, 3, STATUS_SCHEMA_VERSION].includes(record?.schemaVersion) &&
+        [1, 2, 3, 4, STATUS_SCHEMA_VERSION].includes(record?.schemaVersion) &&
         typeof record.turnId === "string" &&
         finiteNumber(record.outputTokens) > 0 &&
         finiteNumber(record.durationMs) > 0
@@ -637,6 +637,10 @@ export function summarizeStatusRecords(records) {
       ? {
           ttftMs: finiteNumber(latestTtftRecord.ttftMs),
           completedDurationMs: finiteNumber(latestTtftRecord.completedDurationMs),
+          timingSource:
+            typeof latestTtftRecord.timingSource === "string"
+              ? latestTtftRecord.timingSource
+              : null,
           isLatestTurn: latestTtftRecord.turnId === latest?.turnId,
           capturedAt: latestTtftRecord.capturedAt,
         }
@@ -710,6 +714,7 @@ export function backfillTurnCompletion({
   sessionId,
   turnId,
   completion,
+  timingSource = "task_complete_direct",
   capturedAt = new Date(),
 }) {
   if (!completion?.available) return { updated: false, reason: completion?.reason || "unavailable" };
@@ -736,7 +741,7 @@ export function backfillTurnCompletion({
     schemaVersion: STATUS_SCHEMA_VERSION,
     ttftMs: completion.ttftMs,
     completedDurationMs: completion.completedDurationMs,
-    timingSource: completion.source,
+    timingSource,
     timingCapturedAt: safeTimingCapturedAt.toISOString(),
   });
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -762,6 +767,8 @@ export function nativeOtelReferenceFromInspection(inspection) {
   const meanTbtMs = finiteNumber(tbt?.meanMs);
   const observations = finiteNumber(tbt?.observations);
   const approximateTps = finiteNumber(timing?.approximateTpsFromServiceTbt);
+  const outputTokens = finiteNumber(timing?.tokenUsage?.output?.sum);
+  const turnsObserved = finiteNumber(timing?.turnE2e?.observations);
   if (
     meanTbtMs === null ||
     meanTbtMs <= 0 ||
@@ -775,9 +782,20 @@ export function nativeOtelReferenceFromInspection(inspection) {
   return {
     available: true,
     source: "codex-native-otel-engine-timing",
-    scope: "capture_aggregate_unattributed",
+    confidence: inspection?.captureIsolation?.singleTurnCandidateEligible
+      ? "isolated-window-candidate"
+      : "capture-aggregate",
+    scope: inspection?.captureIsolation?.singleTurnCandidateEligible
+      ? "isolated_single_turn_capture_unattributed_to_live_stop"
+      : "capture_aggregate_unattributed",
     serviceTbtMeanMs: meanTbtMs,
     observations,
+    outputTokens,
+    turnsObserved,
+    shortOutputReference:
+      outputTokens !== null && turnsObserved !== null && turnsObserved > 0
+        ? outputTokens / turnsObserved < SHORT_RESPONSE_TOKENS_PER_REQUEST
+        : null,
     approximateTps,
     currentTurnAttributed: false,
     exactPerRequestTps: false,
@@ -806,7 +824,9 @@ export function formatStatusLine(status, label = "整轮吞吐") {
     ? ` · ${ttft.isLatestTurn ? "TTFT" : "上轮 TTFT"} ${compactDuration(ttft.ttftMs)}`
     : "";
   const nativeOtelSuffix = status.nativeOtel?.available
-    ? ` · OTel 会话参考 ≈${status.nativeOtel.approximateTps.toFixed(1)} tok/s（未归轮）`
+    ? ` · 原生生成 TPS ≈${status.nativeOtel.approximateTps.toFixed(1)}（TBT 推算·${
+        status.nativeOtel.confidence === "isolated-window-candidate" ? "单轮候选" : "捕获参考"
+      }·未归轮${status.nativeOtel.shortOutputReference ? "·短输出" : ""}）`
     : "";
   if (status.latest.requestThroughput && status.session.requestThroughput) {
     const qualifier = status.latest.shortResponseReference
@@ -833,6 +853,7 @@ export function captureStopStatus(input, options = {}) {
           sessionId: input?.session_id,
           turnId: previousCompletion.turnId,
           completion: previousCompletion,
+          timingSource: "task_complete_sync_recovery",
           capturedAt,
         })
       : { updated: false, reason: previousCompletion.reason };

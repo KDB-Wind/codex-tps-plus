@@ -55,13 +55,23 @@ function keyValue(key, value) {
   return message([fieldBytes(1, key), fieldBytes(2, anyString(value))]);
 }
 
-function histogramPoint({ count = 1, sum, attributes = [] }) {
+function histogramPoint({
+  count = 1,
+  sum,
+  min = sum,
+  max = sum,
+  startTime = 1_000_000_000n,
+  time = 2_000_000_000n,
+  attributes = [],
+}) {
   return message([
-    fieldFixed64(2, 1_000_000_000n),
-    fieldFixed64(3, 2_000_000_000n),
+    fieldFixed64(2, startTime),
+    fieldFixed64(3, time),
     fieldFixed64(4, count),
     fieldDouble(5, sum),
     ...attributes.map(([key, value]) => fieldBytes(9, keyValue(key, value))),
+    fieldDouble(11, min),
+    fieldDouble(12, max),
   ]);
 }
 
@@ -92,6 +102,7 @@ function metricsRequest() {
         { sum: 100, attributes: [["token_type", "output"]] },
       ])
     ),
+    fieldBytes(2, histogramMetric("codex.turn.e2e_duration_ms", [{ sum: 2000 }])),
     fieldBytes(
       2,
       histogramMetric("secret.codex.turn.token_usage.private", [
@@ -108,41 +119,66 @@ function metricsRequest() {
   ]);
 }
 
-function logsRequest() {
-  const resource = message([fieldBytes(1, keyValue("service.name", "codex-cli"))]);
-  const record = message([
+function logRecord(conversationId, eventName = "codex.sse_event", eventKind = "response.completed") {
+  return message([
     fieldBytes(5, anyString("event")),
-    fieldBytes(6, keyValue("event.name", "codex.sse_event")),
-    fieldBytes(6, keyValue("event.kind", "response.completed")),
-    fieldBytes(6, keyValue("conversation.id", "secret-session")),
-    fieldBytes(6, keyValue("request.id", "secret-request")),
+    fieldBytes(6, keyValue("event.name", eventName)),
+    fieldBytes(6, keyValue("event.kind", eventKind)),
+    fieldBytes(6, keyValue("conversation.id", conversationId)),
+    fieldBytes(6, keyValue("request.id", `request-${conversationId}`)),
   ]);
-  const scopeLogs = fieldBytes(2, record);
+}
+
+function logsRequest(conversationIds = ["secret-session"]) {
+  const resource = message([fieldBytes(1, keyValue("service.name", "codex-cli"))]);
+  const scopeLogs = message(conversationIds.map((id) => fieldBytes(2, logRecord(id))));
   return fieldBytes(1, message([fieldBytes(1, resource), fieldBytes(2, scopeLogs)]));
 }
 
-function writeCapture(directory, stem, url, body) {
+function writeCapture(directory, stem, url, body, receiverId = null) {
   const bodyFile = `${stem}.bin`;
   fs.writeFileSync(path.join(directory, bodyFile), body);
   fs.writeFileSync(
     path.join(directory, `${stem}.meta.json`),
-    JSON.stringify({ url, contentType: "application/x-protobuf", bodyFile })
+    JSON.stringify({ url, contentType: "application/x-protobuf", bodyFile, receiverId })
   );
 }
 
 test("structured OTLP inspection derives native approximate TPS without inventing request joinability", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-otlp-"));
   try {
-    writeCapture(temp, "metrics", "/v1/metrics", metricsRequest());
-    writeCapture(temp, "logs", "/v1/logs?secret=query-value", logsRequest());
+    writeCapture(temp, "metrics", "/v1/metrics", metricsRequest(), "a".repeat(32));
+    writeCapture(temp, "logs", "/v1/logs?secret=query-value", logsRequest(), "a".repeat(32));
     const report = inspectOtelCapture(temp);
     assert.equal(report.decodedMetricPayloads, 1);
     assert.equal(report.decodedLogPayloads, 1);
     assert.deepEqual(report.parseErrors, []);
     assert.equal(report.nativeTiming.serviceTbt.meanMs, 20);
+    assert.equal(report.nativeTiming.serviceTbt.sumMs, 20);
+    assert.equal(report.nativeTiming.serviceTbt.minMs, 20);
+    assert.equal(report.nativeTiming.serviceTbt.maxMs, 20);
+    assert.equal(report.nativeTiming.serviceTbt.pointCount, 1);
+    assert.deepEqual(report.nativeTiming.serviceTbt.windows, [
+      {
+        startTime: "1970-01-01T00:00:01.000Z",
+        endTime: "1970-01-01T00:00:02.000Z",
+        count: 1,
+        sumMs: 20,
+        minMs: 20,
+        maxMs: 20,
+        temporality: "delta",
+      },
+    ]);
     assert.equal(report.nativeTiming.serviceTtft.meanMs, 500);
+    assert.equal(report.nativeTiming.turnE2e.observations, 1);
+    assert.equal(report.nativeTiming.tokenUsage.output.sum, 100);
     assert.equal(report.nativeTiming.approximateTpsFromServiceTbt, 50);
     assert.equal(report.perRequestJoinable, false);
+    assert.equal(report.captureIsolation.level, "single-conversation-observed");
+    assert.equal(report.captureIsolation.distinctConversationCount, 1);
+    assert.deepEqual(report.transportSignals, ["codex.sse_event"]);
+    assert.equal(report.captureIsolation.singleTurnCandidateEligible, true);
+    assert.equal(report.captureIsolation.evidenceLevel, "isolated-window-candidate");
     assert.equal(report.directMetricRequestKeyObserved, false);
     assert.deepEqual(report.requestKeyNames, []);
     assert.equal(JSON.stringify(report).includes("secret-session"), false);
@@ -151,6 +187,23 @@ test("structured OTLP inspection derives native approximate TPS without inventin
     assert.equal(JSON.stringify(report).includes("secret.codex"), false);
     assert.equal(JSON.stringify(report).includes("query-value"), false);
     assert.equal(scanOtelCapture(temp).joinabilityInspection, "structured-otlp-protobuf");
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("OTel inspection detects concurrent conversations without exposing their identifiers", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-otlp-concurrent-"));
+  try {
+    writeCapture(temp, "metrics", "/v1/metrics", metricsRequest(), "b".repeat(32));
+    writeCapture(temp, "logs", "/v1/logs", logsRequest(["conversation-a", "conversation-b"]), "b".repeat(32));
+    const report = inspectOtelCapture(temp);
+    assert.equal(report.captureIsolation.level, "concurrent-conversations-observed");
+    assert.equal(report.captureIsolation.distinctConversationCount, 2);
+    assert.equal(report.captureIsolation.singleTurnCandidateEligible, false);
+    const serialized = JSON.stringify(report);
+    assert.equal(serialized.includes("conversation-a"), false);
+    assert.equal(serialized.includes("conversation-b"), false);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }
@@ -168,6 +221,8 @@ test("OTel config inspection distinguishes log and metric exporters", () => {
     const report = inspectOtelConfig(config);
     assert.equal(report.exporter, "none");
     assert.equal(report.metricsExporter, "otlp-http");
+    assert.equal(report.metricsEndpoint, "http://127.0.0.1:4318/v1/metrics");
+    assert.equal(report.metricsEndpointLoopback, true);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }

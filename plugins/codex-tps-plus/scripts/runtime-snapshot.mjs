@@ -56,6 +56,11 @@ function versionCore(version) {
   return match ? match.slice(1).map(Number) : null;
 }
 
+function cachebuster(version) {
+  const match = /\+codex\.(\d{14})$/.exec(version || "");
+  return match ? match[1] : null;
+}
+
 function isSameOrNewerVersion(candidate, active) {
   const candidateCore = versionCore(candidate);
   const activeCore = versionCore(active);
@@ -65,7 +70,15 @@ function isSameOrNewerVersion(candidate, active) {
       return candidateCore[index] > activeCore[index];
     }
   }
-  return true;
+  if (candidate === active) return true;
+  const candidateCachebuster = cachebuster(candidate);
+  const activeCachebuster = cachebuster(active);
+  if (candidateCachebuster && activeCachebuster) {
+    return candidateCachebuster >= activeCachebuster;
+  }
+  if (candidateCachebuster && !activeCachebuster) return true;
+  if (!candidateCachebuster && activeCachebuster) return false;
+  return false;
 }
 
 function copySnapshot(pluginRoot, snapshotsRoot, fingerprint) {

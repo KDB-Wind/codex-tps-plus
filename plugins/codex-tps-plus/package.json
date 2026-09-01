@@ -1,6 +1,6 @@
 {
   "name": "codex-tps-plus",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Codex CLI delayed TTFT plus request and end-to-end throughput display.",
@@ -14,6 +14,7 @@
     "status": "node scripts/status.mjs",
     "analyze": "node scripts/analyze-transcript.mjs",
     "probe-report": "node scripts/probe-report.mjs",
-    "otel-inspect": "node scripts/otel-inspect.mjs"
+    "otel-inspect": "node scripts/otel-inspect.mjs",
+    "otel:serve": "node scripts/otel.mjs serve"
   }
 }

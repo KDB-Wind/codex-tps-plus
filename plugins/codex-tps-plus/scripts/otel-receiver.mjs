@@ -7,6 +7,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 
 function option(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -34,6 +35,8 @@ function writePrivateAtomic(file, data) {
 const outputDir = path.resolve(option("--output-dir", path.join(os.tmpdir(), "codex-tps-plus-otel")));
 const requestedPort = Number(option("--port", "0"));
 const maxBodyBytes = positiveInteger(option("--max-body-bytes", "67108864"), 64 * 1024 * 1024);
+const maxFiles = positiveInteger(option("--max-files", "1000"), 1000);
+const maxTotalBytes = positiveInteger(option("--max-total-bytes", "536870912"), 512 * 1024 * 1024);
 const readyFile = process.argv.includes("--ready-file")
   ? path.resolve(option("--ready-file", path.join(outputDir, "ready.json")))
   : null;
@@ -42,7 +45,75 @@ if (!Number.isSafeInteger(requestedPort) || requestedPort < 0 || requestedPort >
 }
 fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
 
+function processAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+const receiverId = crypto.randomBytes(16).toString("hex");
+const lockPath = path.join(outputDir, "receiver.lock");
+let lockHandle = null;
+for (let attempt = 0; attempt < 2; attempt += 1) {
+  try {
+    lockHandle = fs.openSync(lockPath, "wx", 0o600);
+    fs.writeFileSync(
+      lockHandle,
+      `${JSON.stringify({ schemaVersion: 1, receiverId, pid: process.pid, startedAt: new Date().toISOString() })}\n`
+    );
+    break;
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    let existing = null;
+    try {
+      existing = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+    } catch {}
+    if (processAlive(Number(existing?.pid))) {
+      throw new Error(`capture directory already has an active receiver (pid ${existing.pid})`);
+    }
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {}
+  }
+}
+if (lockHandle === null) throw new Error("could not acquire capture directory lock");
+
 let sequence = 0;
+function pruneCaptures() {
+  try {
+    const captures = fs
+      .readdirSync(outputDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /^\d+-\d+-\d+\.meta\.json$/.test(entry.name))
+      .map((entry) => {
+        const metaPath = path.join(outputDir, entry.name);
+        const metadata = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+        const bodyPath = path.join(outputDir, path.basename(metadata.bodyFile || ""));
+        const metaStat = fs.statSync(metaPath);
+        let bodySize = 0;
+        try {
+          bodySize = fs.statSync(bodyPath).size;
+        } catch {}
+        return { metaPath, bodyPath, size: metaStat.size + bodySize, mtimeMs: metaStat.mtimeMs };
+      })
+      .sort((left, right) => left.mtimeMs - right.mtimeMs || left.metaPath.localeCompare(right.metaPath));
+    let totalBytes = captures.reduce((total, item) => total + item.size, 0);
+    while (captures.length > maxFiles || totalBytes > maxTotalBytes) {
+      const oldest = captures.shift();
+      if (!oldest) break;
+      totalBytes -= oldest.size;
+      for (const file of [oldest.metaPath, oldest.bodyPath]) {
+        try {
+          fs.unlinkSync(file);
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
 const server = http.createServer((request, response) => {
   let requestPath;
   try {
@@ -92,12 +163,15 @@ const server = http.createServer((request, response) => {
             contentType: request.headers["content-type"] || null,
             contentLength: body.length,
             bodyFile,
+            receiverId,
+            schemaVersion: 1,
             rawCaptureSensitive: true,
           },
           null,
           2
         )
       );
+      pruneCaptures();
       response.writeHead(200, { "content-type": "text/plain" });
       response.end("ok");
     } catch {
@@ -115,7 +189,19 @@ const server = http.createServer((request, response) => {
 server.listen(requestedPort, "127.0.0.1", () => {
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : requestedPort;
-  const ready = { host: "127.0.0.1", port, outputDir, pid: process.pid };
+  const ready = {
+    schemaVersion: 1,
+    receiverId,
+    host: "127.0.0.1",
+    port,
+    endpoint: `http://127.0.0.1:${port}`,
+    outputDir,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    rawCaptureSensitive: true,
+    retention: { maxFiles, maxTotalBytes, maxBodyBytes },
+  };
+  writePrivateAtomic(path.join(outputDir, "receiver.json"), JSON.stringify(ready, null, 2));
   if (readyFile) {
     writePrivateAtomic(readyFile, JSON.stringify(ready, null, 2));
   }
@@ -124,7 +210,16 @@ server.listen(requestedPort, "127.0.0.1", () => {
 });
 
 function shutdown() {
-  server.close(() => process.exit(0));
+  server.close(() => {
+    try {
+      fs.closeSync(lockHandle);
+    } catch {}
+    try {
+      const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+      if (lock.receiverId === receiverId) fs.unlinkSync(lockPath);
+    } catch {}
+    process.exit(0);
+  });
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

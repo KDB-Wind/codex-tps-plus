@@ -19,6 +19,8 @@ const SIGNAL_FRAGMENTS = [
   "turn.e2e_duration_ms",
   "codex.api_request",
   "codex.sse_event",
+  "codex.websocket_event",
+  "codex.websocket_request",
   "response.completed",
 ];
 
@@ -51,6 +53,44 @@ function safeBodyPath(directory, bodyName) {
     return null;
   }
   return path.join(directory, bodyName);
+}
+
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function processAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function inspectReceiver(directory) {
+  const descriptor = readJson(path.join(directory, "receiver.json"));
+  const lock = readJson(path.join(directory, "receiver.lock"));
+  const sameReceiver =
+    typeof descriptor?.receiverId === "string" &&
+    descriptor.receiverId.length > 0 &&
+    descriptor.receiverId === lock?.receiverId;
+  const active = sameReceiver && Number(descriptor.pid) === Number(lock?.pid) && processAlive(Number(lock.pid));
+  let endpoint = null;
+  try {
+    const url = new URL(descriptor?.endpoint || "");
+    if (["127.0.0.1", "localhost", "::1"].includes(url.hostname)) endpoint = url.origin;
+  } catch {}
+  return {
+    active,
+    endpoint,
+    currentReceiverId: sameReceiver ? descriptor.receiverId : null,
+  };
 }
 
 function signalFor(value) {
@@ -141,6 +181,8 @@ function structuralInspection(directory, entries) {
   const metrics = [];
   const logEvents = [];
   const parseErrors = [];
+  const conversationIds = new Set();
+  const transportSignals = new Set();
   let decodedMetricPayloads = 0;
   let decodedLogPayloads = 0;
   let logRecords = 0;
@@ -176,6 +218,13 @@ function structuralInspection(directory, entries) {
             for (const record of scope.records) {
               logRecords += 1;
               collectKeyNames(logRecordKeys, record.attributes);
+              const conversationId = record.attributes?.["conversation.id"];
+              if (typeof conversationId === "string" && conversationId) {
+                conversationIds.add(conversationId);
+              }
+              const eventName = String(record.attributes?.["event.name"] || "");
+              if (eventName.includes("sse")) transportSignals.add("codex.sse_event");
+              if (eventName.includes("websocket")) transportSignals.add("codex.websocket_request");
               const safe = safeLogRecord(record);
               if (safe) {
                 signals.add(safe.signal);
@@ -215,6 +264,8 @@ function structuralInspection(directory, entries) {
     sessionKeyNames: sessionKeys,
     requestKeyNames: sharedRequestKeys,
     perRequestJoinKeyObserved: sharedRequestKeys.length > 0,
+    distinctConversationCount: conversationIds.size,
+    transportSignals: [...transportSignals].sort(),
     metrics,
     logEvents,
   };
@@ -224,6 +275,9 @@ function nativeTimingSummary(metrics) {
   const aggregate = (signal) => {
     let count = 0;
     let sumMs = 0;
+    let minMs = null;
+    let maxMs = null;
+    const windows = [];
     for (const metric of metrics.filter((item) => item.signal === signal)) {
       for (const point of metric.points) {
         const pointCount = Number(point.count);
@@ -231,21 +285,60 @@ function nativeTimingSummary(metrics) {
         if (Number.isFinite(pointCount) && pointCount > 0 && Number.isFinite(pointSum) && pointSum > 0) {
           count += pointCount;
           sumMs += pointSum;
+          const pointMin = Number(point.min);
+          const pointMax = Number(point.max);
+          if (Number.isFinite(pointMin)) minMs = minMs === null ? pointMin : Math.min(minMs, pointMin);
+          if (Number.isFinite(pointMax)) maxMs = maxMs === null ? pointMax : Math.max(maxMs, pointMax);
+          windows.push({
+            startTime: point.startTime,
+            endTime: point.time,
+            count: pointCount,
+            sumMs: pointSum,
+            minMs: Number.isFinite(pointMin) ? pointMin : null,
+            maxMs: Number.isFinite(pointMax) ? pointMax : null,
+            temporality: metric.temporality,
+          });
         }
       }
     }
-    return count > 0 ? { observations: count, meanMs: sumMs / count } : null;
+    return count > 0
+      ? {
+          observations: count,
+          pointCount: windows.length,
+          sumMs,
+          meanMs: sumMs / count,
+          minMs,
+          maxMs,
+          windows,
+        }
+      : null;
   };
   const serviceTbt = aggregate("responses_api_engine_service_tbt");
   const serviceTtft = aggregate("responses_api_engine_service_ttft");
   const iapiTbt = aggregate("responses_api_engine_iapi_tbt");
   const iapiTtft = aggregate("responses_api_engine_iapi_ttft");
+  const turnE2e = aggregate("turn.e2e_duration_ms");
+  const tokenUsage = {};
+  for (const metric of metrics.filter((item) => item.signal === "turn.token_usage")) {
+    for (const point of metric.points) {
+      if (!SAFE_TOKEN_TYPES.has(point.tokenType)) continue;
+      const sum = Number(point.sum);
+      const count = Number(point.count);
+      if (!Number.isFinite(sum) || !Number.isFinite(count) || count <= 0) continue;
+      const current = tokenUsage[point.tokenType] || { observations: 0, sum: 0 };
+      current.observations += count;
+      current.sum += sum;
+      tokenUsage[point.tokenType] = current;
+    }
+  }
   return {
     source: "codex-native-otel-engine-timing",
     serviceTbt,
     serviceTtft,
     iapiTbt,
     iapiTtft,
+    turnE2e,
+    tokenUsage,
     approximateTpsFromServiceTbt:
       serviceTbt?.meanMs > 0 ? 1000 / serviceTbt.meanMs : null,
     exactPerRequestTps: false,
@@ -259,10 +352,13 @@ function nativeTimingSummary(metrics) {
 
 export function inspectOtelCapture(directory) {
   if (!fs.existsSync(directory)) return { directoryPresent: false };
+  const receiverState = inspectReceiver(directory);
   const metaFiles = fs
     .readdirSync(directory, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith(".meta.json"));
   const entries = [];
+  const receiverIds = new Set();
+  if (receiverState.currentReceiverId) receiverIds.add(receiverState.currentReceiverId);
   const byUrl = {};
   let metricPayloads = 0;
   let logPayloads = 0;
@@ -277,8 +373,12 @@ export function inspectOtelCapture(directory) {
         url,
         metadata: {
           bodyFile: metadata.bodyFile || entry.name.replace(/\.meta\.json$/, ".bin"),
+          receiverId: typeof metadata.receiverId === "string" ? metadata.receiverId : null,
         },
       });
+      if (typeof metadata.receiverId === "string" && metadata.receiverId) {
+        receiverIds.add(metadata.receiverId);
+      }
     } catch {}
   }
   const structural = structuralInspection(directory, entries);
@@ -288,6 +388,26 @@ export function inspectOtelCapture(directory) {
   const hasDirectMetricRequestKey = structural.metricPointAttributeKeys.some((key) => REQUEST_KEY.test(key));
   const perRequestJoinable = hasTbt && hasTtft && hasTokenUsage && hasDirectMetricRequestKey;
   const nativeTiming = nativeTimingSummary(structural.metrics);
+  const distinctConversationCount = structural.distinctConversationCount;
+  const singleTurnCandidateEligible =
+    receiverIds.size === 1 &&
+    distinctConversationCount === 1 &&
+    nativeTiming.turnE2e?.observations === 1 &&
+    nativeTiming.serviceTbt?.observations >= 1;
+  const captureIsolation = {
+    level:
+      distinctConversationCount > 1
+        ? "concurrent-conversations-observed"
+        : distinctConversationCount === 1
+          ? "single-conversation-observed"
+          : "conversation-isolation-unknown",
+    distinctConversationCount,
+    receiverIdCount: receiverIds.size,
+    singleTurnCandidateEligible,
+    evidenceLevel: singleTurnCandidateEligible
+      ? "isolated-window-candidate"
+      : "capture-aggregate",
+  };
   return {
     directoryPresent: true,
     requestCount: metaFiles.length,
@@ -295,6 +415,14 @@ export function inspectOtelCapture(directory) {
     metricPayloads,
     logPayloads,
     ...structural,
+    transportSignals: structural.transportSignals,
+    receiver: {
+      active: receiverState.active,
+      endpoint: receiverState.endpoint,
+      receiverIdCount: receiverIds.size,
+      exclusiveCaptureWriter: receiverState.active && receiverIds.size === 1,
+    },
+    captureIsolation,
     directMetricRequestKeyObserved: hasDirectMetricRequestKey,
     perRequestJoinable,
     nativeTiming,

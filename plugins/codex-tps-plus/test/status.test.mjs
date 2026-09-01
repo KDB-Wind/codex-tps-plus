@@ -268,6 +268,7 @@ test("delayed TTFT backfill updates the same redacted turn and session mean", ()
   const status = readSessionStatus({ dataDir: temp, sessionId: "session-secret" });
   assert.equal(status.turns, 1);
   assert.equal(status.latest.ttftMs, 900);
+  assert.equal(status.latest.timingSource, "task_complete_direct");
   assert.equal(status.latest.completedDurationMs, 3000);
   assert.equal(status.session.ttftMeasuredTurns, 1);
   assert.equal(status.session.ttftMeanMs, 900);
@@ -311,6 +312,10 @@ test("background Stop worker backfills TTFT and always remains informational", a
   assert.equal(
     readSessionStatus({ dataDir: temp, sessionId: "session-background" }).latest.ttftMs,
     900
+  );
+  assert.equal(
+    readSessionStatus({ dataDir: temp, sessionId: "session-background" }).latest.timingSource,
+    "task_complete_async"
   );
   fs.rmSync(temp, { recursive: true, force: true });
 });
@@ -384,6 +389,7 @@ test("synchronous Stop recovers the previous turn TTFT when the async hook did n
   assert.equal(result.status.turns, 2);
   assert.equal(result.status.session.ttftMeasuredTurns, 1);
   assert.equal(result.status.mostRecentTtft.ttftMs, 900);
+  assert.equal(result.status.mostRecentTtft.timingSource, "task_complete_sync_recovery");
   assert.equal(result.status.mostRecentTtft.isLatestTurn, false);
   assert.match(result.line, /· 上轮 TTFT 0\.9s$/);
   fs.rmSync(temp, { recursive: true, force: true });
@@ -458,23 +464,54 @@ test("background hook executes through an installed directory junction", () => {
   fs.rmSync(temp, { recursive: true, force: true });
 });
 
-test("unattributed native OTel TBT is labeled as a session reference, never current TPS", () => {
+test("unattributed native OTel TBT is labeled as a capture reference, never current TPS", () => {
   const nativeOtel = nativeOtelReferenceFromInspection({
     perRequestJoinable: false,
     rawCaptureSensitive: true,
     nativeTiming: {
       serviceTbt: { observations: 2, meanMs: 12.5 },
+      turnE2e: { observations: 2 },
+      tokenUsage: { output: { observations: 2, sum: 400 } },
       approximateTpsFromServiceTbt: 80,
     },
   });
   assert.equal(nativeOtel.available, true);
+  assert.equal(nativeOtel.confidence, "capture-aggregate");
+  assert.equal(nativeOtel.shortOutputReference, false);
   assert.equal(nativeOtel.approximateTps, 80);
   assert.equal(nativeOtel.currentTurnAttributed, false);
   assert.equal(nativeOtel.exactPerRequestTps, false);
   const status = summarizeStatusRecords([
     { outputTokens: 100, durationMs: 2000, capturedAt: "2026-08-30T12:00:00.000Z" },
   ]);
-  assert.match(formatStatusLine({ ...status, nativeOtel }), /OTel 会话参考 ≈80\.0 tok\/s（未归轮）$/);
+  assert.match(
+    formatStatusLine({ ...status, nativeOtel }),
+    /原生生成 TPS ≈80\.0（TBT 推算·捕获参考·未归轮）$/
+  );
+});
+
+test("an isolated OTel window remains an unattributed short-output candidate", () => {
+  const nativeOtel = nativeOtelReferenceFromInspection({
+    perRequestJoinable: false,
+    rawCaptureSensitive: true,
+    captureIsolation: { singleTurnCandidateEligible: true },
+    nativeTiming: {
+      serviceTbt: { observations: 1, meanMs: 100 },
+      turnE2e: { observations: 1 },
+      tokenUsage: { output: { observations: 1, sum: 5 } },
+      approximateTpsFromServiceTbt: 10,
+    },
+  });
+  assert.equal(nativeOtel.confidence, "isolated-window-candidate");
+  assert.equal(nativeOtel.shortOutputReference, true);
+  assert.equal(nativeOtel.currentTurnAttributed, false);
+  const status = summarizeStatusRecords([
+    { outputTokens: 5, durationMs: 2000, capturedAt: "2026-09-01T00:00:00.000Z" },
+  ]);
+  assert.match(
+    formatStatusLine({ ...status, nativeOtel }),
+    /原生生成 TPS ≈10\.0（TBT 推算·单轮候选·未归轮·短输出）$/
+  );
 });
 
 test("Stop capture labels request-interval throughput as including TTFT", () => {
