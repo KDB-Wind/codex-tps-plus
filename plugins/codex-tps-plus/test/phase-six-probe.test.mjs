@@ -26,7 +26,7 @@ import {
   compareE2StaticFields,
   computeE2Reference,
 } from "../../../tools/observe-probe-e2.mjs";
-import { parseProbeArgs, runProbe } from "../../../tools/observe-probe.mjs";
+import { helpText, parseProbeArgs, runProbe } from "../../../tools/observe-probe.mjs";
 import { JsonRpcClient, JsonRpcTransport, parseEndpoint } from "../../../tools/observe-probe-transport.mjs";
 import { extractStopMetric } from "../scripts/status-core.mjs";
 
@@ -63,6 +63,7 @@ function makeState(options = {}) {
     threadId: "thread-test",
     clock: () => now,
     eventSink: (event) => events.push(event),
+    daemonVersion: TESTED_DAEMON_VERSIONS[0],
     ...options,
   });
   configureStateForRun(state, {});
@@ -306,15 +307,19 @@ test("unknown schema is capture-only and still redacts delta content", () => {
 
 test("schema capture guidance records the initialize limitation and unknown daemon version", () => {
   const state = new ProbeState({ schemaVersion: "v2", schemaVersionSource: "cli_argument" });
-  state.setDaemonVersion(TESTED_DAEMON_VERSIONS[0]);
   let summary = state.summary();
+  assert.equal(summary.captureOnly, true);
+  assert.equal(summary.captureSuggested, true);
+  assert.equal(summary.captureSuggestionReason, "daemon_version_unknown");
+  state.setDaemonVersion(TESTED_DAEMON_VERSIONS[0]);
+  summary = state.summary();
   assert.equal(summary.captureSuggested, false);
   assert.equal(summary.captureSuggestionReason, null);
   assert.equal(summary.schemaVersionObservedInInitialize, false);
   state.recordResponse("initialize", { userAgent: "codex-cli 9.99.0" });
   summary = state.summary();
   assert.equal(summary.daemonVersion, "codex-cli 9.99.0");
-  assert.equal(summary.captureOnly, false);
+  assert.equal(summary.captureOnly, true);
   assert.equal(summary.captureSuggested, true);
   assert.equal(summary.captureSuggestionReason, "daemon_version_unknown");
   assert.equal(summary.schemaVersionSource, "cli_argument");
@@ -330,6 +335,33 @@ test("schema capture guidance records the initialize limitation and unknown daem
   assert.equal(summary.captureOnly, true);
   assert.equal(summary.captureSuggested, true);
   assert.equal(summary.captureSuggestionReason, "schema_untested");
+});
+
+test("unknown daemon is capture-only and disables LIVE, TTFT, and usage", () => {
+  const { state, advance } = makeState();
+  startTurn(state, "turn-unknown-daemon");
+  completeAgentItem(state, "turn-unknown-daemon", "item-unknown-daemon", "visible");
+  state.handleNotification({
+    method: "thread/tokenUsage/updated",
+    params: {
+      threadId: "thread-test",
+      turnId: "turn-unknown-daemon",
+      tokenUsage: tokenUsage(8, 3),
+    },
+  });
+  advance(10);
+  state.setDaemonVersion("codex-cli 9.99.0");
+  const turn = state.finalizeWindow(state.turns.get("turn-unknown-daemon"), "completed");
+  const summary = state.summary();
+  assert.equal(summary.captureOnly, true);
+  assert.equal(summary.captureSuggestionReason, "daemon_version_unknown");
+  assert.equal(turn.metrics.live.available, false);
+  assert.equal(turn.metrics.live.reason, "daemon_version_unknown");
+  assert.equal(turn.metrics.ttft.available, false);
+  assert.equal(turn.metrics.ttft.reason, "daemon_version_unknown");
+  assert.equal(turn.metrics.usage.available, false);
+  assert.equal(turn.metrics.usage.reason, "daemon_version_unknown");
+  assert.equal(turn.partialUsage, null);
 });
 
 test("initialize user-agent normalization keeps the stable tested daemon label", () => {
@@ -595,6 +627,35 @@ test("capture directories stay outside v0.5 data and allocate unique runs", () =
   assert.throws(
     () => assertIndependentOutputDirectory(path.join(v05Data, "status"), {
       TPS_PLUS_DATA_DIR: v05Data,
+      PLUGIN_DATA: "",
+    }),
+    /output_directory_overlaps_v05_data/
+  );
+  const windowsCodexHome = path.join(temp, "windows-codex-home");
+  const windowsDefaultData = path.join(
+    windowsCodexHome,
+    "plugins",
+    "data",
+    "codex-tps-plus-personal"
+  );
+  assert.throws(
+    () => assertIndependentOutputDirectory(path.join(windowsDefaultData, "status"), {
+      CODEX_HOME: windowsCodexHome,
+      TPS_PLUS_DATA_DIR: "",
+      PLUGIN_DATA: "",
+    }),
+    /output_directory_overlaps_v05_data/
+  );
+  const defaultEnvData = path.join(
+    os.homedir(),
+    ".codex",
+    "plugins",
+    "data",
+    "codex-tps-plus-personal"
+  );
+  assert.throws(
+    () => assertIndependentOutputDirectory(path.join(defaultEnvData, "status"), {
+      TPS_PLUS_DATA_DIR: "",
       PLUGIN_DATA: "",
     }),
     /output_directory_overlaps_v05_data/
@@ -867,19 +928,24 @@ test("runner records a transport exception without persisting the raw error", as
   fs.rmSync(temp, { recursive: true, force: true });
 });
 
-test("CLI argument parser requires endpoint and output and exposes capture-only schema option", () => {
+test("CLI argument parser and help expose capture-only schema and daemon options", () => {
   assert.throws(() => parseProbeArgs([]), /endpoint_and_out_required/);
   const options = parseProbeArgs([
     "--endpoint", "unix:///tmp/codex.sock",
     "--out", "capture",
     "--schema-version", "v99",
+    "--daemon-version", "codex-cli 9.99.0",
     "--unsubscribe-timeout-ms", "7",
     "--usage-terminal-verified",
   ]);
   assert.equal(options.schemaVersion, "v99");
   assert.equal(options.schemaVersionSource, "cli_argument");
+  assert.equal(options.daemonVersion, "codex-cli 9.99.0");
   assert.equal(options.unsubscribeTimeoutMs, 7);
   assert.equal(options.usageTerminalVerified, true);
+  const help = helpText();
+  assert.match(help, /untested labels are capture-only and disable LIVE\/TTFT\/usage/);
+  assert.match(help, /unknown labels are capture-only and disable LIVE\/TTFT\/usage/);
 });
 
 test("JsonRpcClient handles a synchronous fake response after registering the pending request", async () => {

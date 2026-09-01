@@ -17,7 +17,7 @@
 - `tools/observe-probe-core.mjs`：出站方法白名单、server→client request fail-closed、
   required/metric-required/optional 分级、窗口状态机、断连失效、异常轮 partialUsage、
   有界内存和脱敏事件落盘；TTFT(client) 以首个可见 reasoning/answer delta 为锚点，
-  并对已测试 daemon 版本做 capture 建议门禁。
+  并对 schema 与 daemon 版本执行 capture-only 门禁。
 - `tools/observe-probe-transport.mjs`：受限传输端点和 JSON-RPC 客户端；不会回答 server
   request；退订使用独立的短请求超时。
 - `tools/observe-probe-e2.mjs`：独立 transcript 参考实现、`capturedAt` 时间锚、静态字段
@@ -31,11 +31,11 @@
 
 - 禁止 `turn/start` 等出站方法在发送前抛出非零协议违规；
 - 审批 server request 立即 fail-closed、无回包且不泄露参数；
-- 未测试 schema 仍捕获但不计算 LIVE/TTFT/usage；未知通知只计数；
+- 未测试 schema 或未知 daemon 均仍捕获但强制不计算 LIVE/TTFT/usage；未知通知只计数；
 - InitializeResponse 当前没有 `schemaVersion` 字段，因此 summary 明确记录
   `schemaVersionSource`、`schemaVersionObservedInInitialize`、`daemonVersionSource` 和
-  `captureSuggested`；
-  未知 daemon 不自动伪造实测通过，而是提示操作员切换到 capture-only 流程；
+  `captureSuggested` 与 `captureSuggestionReason`；
+  未知 daemon 的 reason 为 `daemon_version_unknown`，不能被当作已验证指标运行；
 - 缺失 optional reasoning 不判 E1；缺失 required 或 metric-required 只使对应指标
   `unavailable`；
 - `A😀中` 按 3 个 Unicode 码点、8 个 UTF-8 bytes 计算；
@@ -46,12 +46,14 @@
 - interrupted 轮只有在显式终态 usage 证据下才生成带状态的 `partialUsage`，不生成速率；
 - summary 临时文件原子替换、事件数/总字节数/文件数有界，产物没有 delta 正文或内容
   摘要字段；
+- capture 输出目录拒绝显式 v0.5 数据目录，以及 Windows `CODEX_HOME` 和缺失
+  `CODEX_HOME` 时的默认 `plugins/data/codex-tps-plus-personal`；
 - E2 参考复算使用记录内 `capturedAt`，并覆盖重复 token 快照、工具调用、启动前快照、
   超长请求区间、无 turn_id 的完成记录；独立性断言确认其只依赖 `node:fs`，不导入生产
   聚合实现；
 - loopback 端点校验、同步 JSON-RPC 响应、正常 runner 发送序列和 server request 路由。
 
-本次自动化命令结果：`npm test` 82/82 通过；phase-six 专项测试 30/30 通过；
+本次自动化命令结果：`npm test` 83/83 通过；phase-six 专项测试 31/31 通过；
 `npm run release:check` 通过且版本仍为 `0.5.0`；`npm run doctor -- --json` 通过（Node、
 Codex CLI、已安装插件、manifest、Hook、凭据覆盖保护和 OTel 配置检查均为 OK）。
 
@@ -83,8 +85,9 @@ Get-Content (Join-Path $run "probe-summary.json")
 
 `InitializeResponse` 不提供 `schemaVersion`，所以 `--schema-version v2` 是操作员对已
 审核 schema 的明确标注；`daemonVersion` 应填 daemon version JSON 中与 Initialize
-`userAgent` 对应的精确标签。若标签不在探针的 tested daemon 集合中，结果会保留捕获但
-将 `captureSuggested` 标为 `true`，不能把它当作已验证指标运行。
+`userAgent` 对应的精确标签。若标签不在探针的 tested daemon 集合中，结果会保留捕获，
+但将 `captureOnly` 和 `captureSuggested` 标为 `true`、reason 设为
+`daemon_version_unknown`，并禁用 LIVE/TTFT/usage，不能把它当作已验证指标运行。
 
 Windows 当前不支持 `app-server daemon` 生命周期子命令；本阶段实机使用人工确认拥有的
 loopback 前台服务：`codex app-server --listen ws://127.0.0.1:<owned-port>`。当前 CLI 的
@@ -157,8 +160,9 @@ node tools/observe-probe.mjs --endpoint $endpoint --out $run --thread-id $thread
 
 ## 安全与降级边界
 
-- 未测试 `schemaVersion` 为 capture-only；InitializeResponse 没有该字段，必须保留
-  操作员 schema 标签来源；未知 daemon 额外设置 `captureSuggested=true`。
+- 未测试 `schemaVersion` 与未知 daemon 均为 capture-only；前者 reason 为
+  `schema_untested`，后者 reason 为 `daemon_version_unknown`。InitializeResponse 没有该
+  字段，必须保留操作员 schema 标签来源；capture-only 下不计算 LIVE/TTFT/usage。
 - `currentTime/read` 不预设豁免，收到后记录并 fail-closed。
 - `cleanupTimeoutMs` 只回收内存，不推断 turn 完成。
 - `interrupted`/`failed`/无终态窗口不进入完成轮或会话速率聚合；partialUsage 只能用于

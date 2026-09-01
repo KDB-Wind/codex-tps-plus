@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export const CAPTURE_FORMAT_VERSION = 1;
@@ -502,7 +503,16 @@ export function prepareRunDirectory(outputPath) {
 
 export function assertIndependentOutputDirectory(outputPath, env = process.env) {
   const target = path.resolve(outputPath);
-  const forbiddenBases = [env.TPS_PLUS_DATA_DIR, env.PLUGIN_DATA]
+  const codexHome = typeof env.CODEX_HOME === "string" && env.CODEX_HOME.trim()
+    ? env.CODEX_HOME
+    : path.join(os.homedir(), ".codex");
+  const defaultV05Data = path.join(
+    codexHome,
+    "plugins",
+    "data",
+    "codex-tps-plus-personal"
+  );
+  const forbiddenBases = [env.TPS_PLUS_DATA_DIR, env.PLUGIN_DATA, defaultV05Data]
     .filter((value) => typeof value === "string" && value.trim())
     .map((value) => path.resolve(value));
   for (const base of forbiddenBases) {
@@ -524,7 +534,6 @@ export class ProbeState {
       ? options.schemaVersion
       : "unknown";
     this.testedSchemaVersions = new Set(options.testedSchemaVersions || TESTED_SCHEMA_VERSIONS);
-    this.captureOnly = !this.testedSchemaVersions.has(this.schemaVersion);
     this.schemaVersionSource = typeof options.schemaVersionSource === "string" && options.schemaVersionSource
       ? options.schemaVersionSource
       : "caller_supplied";
@@ -532,8 +541,9 @@ export class ProbeState {
     this.knownDaemonVersions = new Set(options.knownDaemonVersions || TESTED_DAEMON_VERSIONS);
     this.daemonVersion = null;
     this.daemonVersionSource = null;
+    this.captureOnly = true;
     this.captureSuggested = true;
-    this.captureSuggestionReason = this.captureOnly ? "schema_untested" : "daemon_version_unknown";
+    this.captureSuggestionReason = null;
     this.eventSink = typeof options.eventSink === "function" ? options.eventSink : () => {};
     this.onE1Failure = typeof options.onE1Failure === "function" ? options.onE1Failure : () => {};
     this.maxTurns = positiveInteger(options.maxTurns, DEFAULT_MAX_TURNS);
@@ -606,6 +616,7 @@ export class ProbeState {
     this.orphanUsageUpdates = 0;
     this.intermediateUsageUpdatesAfterDisconnect = 0;
     this.memoryCleanupCount = 0;
+    this.updateCaptureSuggestion();
     if (options.daemonVersion) this.setDaemonVersion(options.daemonVersion, "constructor_option");
   }
 
@@ -624,18 +635,18 @@ export class ProbeState {
   setSchemaVersion(value, source = this.schemaVersionSource) {
     if (typeof value !== "string" || !value) return;
     this.schemaVersion = value;
-    this.captureOnly = !this.testedSchemaVersions.has(this.schemaVersion);
     this.schemaVersionSource = source;
     this.updateCaptureSuggestion();
   }
 
   updateCaptureSuggestion() {
-    this.captureSuggested = this.captureOnly || !this.knownDaemonVersions.has(this.daemonVersion);
-    this.captureSuggestionReason = this.captureOnly
+    const schemaUntested = !this.testedSchemaVersions.has(this.schemaVersion);
+    const daemonUnknown = !this.knownDaemonVersions.has(this.daemonVersion);
+    this.captureOnly = schemaUntested || daemonUnknown;
+    this.captureSuggested = this.captureOnly;
+    this.captureSuggestionReason = schemaUntested
       ? "schema_untested"
-      : this.knownDaemonVersions.has(this.daemonVersion)
-        ? null
-        : "daemon_version_unknown";
+      : daemonUnknown ? "daemon_version_unknown" : null;
   }
 
   setSelectedThreadId(threadId, selectedBy = "argument") {
@@ -1350,7 +1361,7 @@ export class ProbeState {
       requiredMissing.length === 0;
     const ttftAvailable = normalCompleted && !this.captureOnly && window.ttftMs !== null;
     let partialUsage = null;
-    if (abnormal && this.usageTerminalVerified && window.latestUsage) {
+    if (!this.captureOnly && abnormal && this.usageTerminalVerified && window.latestUsage) {
       partialUsage = {
         available: true,
         turnStatus: status,
@@ -1373,7 +1384,7 @@ export class ProbeState {
       this.noteMetricIssue("ttft", `${status}_turn`);
     }
     const usage = this.captureOnly
-      ? { available: false, reason: "schema_untested" }
+      ? { available: false, reason: this.captureSuggestionReason || "capture_only" }
       : usageAvailable
         ? {
             available: true,
@@ -1423,7 +1434,9 @@ export class ProbeState {
             characterRate: "LIVE≈ unicode_code_points/s",
             byteRate: "LIVE≈ utf8_bytes/s",
           },
-          reason: this.captureOnly ? "schema_untested" : abnormal ? "abnormal_turn" : "coverage_or_required_event_unavailable",
+          reason: this.captureOnly
+            ? this.captureSuggestionReason || "capture_only"
+            : abnormal ? "abnormal_turn" : "coverage_or_required_event_unavailable",
           coverage: {
             agentMessage: window.coverageMismatched > 0
               ? "mismatched"
@@ -1447,7 +1460,9 @@ export class ProbeState {
       : {
           available: false,
           label: "TTFT(client)",
-          reason: this.captureOnly ? "schema_untested" : abnormal ? "abnormal_turn" : "first_delta_or_turn_missing",
+          reason: this.captureOnly
+            ? this.captureSuggestionReason || "capture_only"
+            : abnormal ? "abnormal_turn" : "first_delta_or_turn_missing",
         };
     if (!normalCompleted && !partialUsage) usage.unavailable = true;
     window.final = {
