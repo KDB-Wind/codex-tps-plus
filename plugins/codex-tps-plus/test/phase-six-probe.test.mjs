@@ -14,6 +14,7 @@ import {
   classifyNotification,
   configureStateForRun,
   measureText,
+  normalizeDaemonVersion,
   TESTED_DAEMON_VERSIONS,
   prepareRunDirectory,
 } from "../../../tools/observe-probe-core.mjs";
@@ -329,6 +330,18 @@ test("schema capture guidance records the initialize limitation and unknown daem
   assert.equal(summary.captureOnly, true);
   assert.equal(summary.captureSuggested, true);
   assert.equal(summary.captureSuggestionReason, "schema_untested");
+});
+
+test("initialize user-agent normalization keeps the stable tested daemon label", () => {
+  assert.equal(normalizeDaemonVersion("codex-tui/0.149.1 (Windows 10.0.26200; x86_64) Orca/1.4.193 (probe; 0.1.0)"), "codex-tui 0.149.1");
+  const state = new ProbeState({ schemaVersion: "v2", schemaVersionSource: "cli_argument" });
+  state.recordResponse("initialize", {
+    userAgent: "codex-tui/0.149.1 (Windows 10.0.26200; x86_64) Orca/1.4.193 (probe; 0.1.0)",
+  });
+  const summary = state.summary();
+  assert.equal(summary.daemonVersion, "codex-tui 0.149.1");
+  assert.equal(summary.captureSuggested, false);
+  assert.equal(summary.captureSuggestionReason, null);
 });
 
 test("disconnect invalidates an open window and reconnect cannot restore it", async () => {
@@ -730,7 +743,7 @@ test("runner performs only allowed sends and keeps real E1 status pending", asyn
   assert.equal(result.summary.daemonVersionSource, "initialize_response");
   assert.equal(result.summary.captureSuggested, false);
   const initialize = fake.sent.find((message) => message.method === "initialize");
-  assert.equal(Object.hasOwn(initialize.params, "capabilities"), false);
+  assert.deepEqual(initialize.params.capabilities, { experimentalApi: true });
   assert.deepEqual(fake.sent.map((message) => message.method), [
     "initialize",
     "initialized",

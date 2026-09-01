@@ -5,8 +5,10 @@
 本阶段只交付 phase-six probe 和自动化验证，不占用产品 semver。产品与插件版本仍为
 `0.5.0`，`v0.5.0` 标签不变；没有 sidecar/LIVE 状态栏、Stop Hook 改动或 alpha tag。
 
-真实 E1/E2 TUI 实验在本次会话中保持 `pending`。当前会话不能安全地启动、接管或断开
-其他正在运行的 Codex 会话，因此下面的协议测试是自动化证据，不是 E1/E2 实机通过。
+真实 E1/E2 TUI 实验不宣称通过：本次对人工确认拥有的 loopback 服务完成了真实 E1
+前置轮和受控审批轮，审批轮触发了 rev4.2 要求的 fail-closed 硬失败，因此 E1 结果为
+`fail`；E2 未启动，仍为 `pending`。没有操作其他正在运行的 Codex 会话，也没有把模拟
+测试或前置捕获写成实机通过。
 
 ## 实现内容
 
@@ -56,20 +58,24 @@ Codex CLI、已安装插件、manifest、Hook、凭据覆盖保护和 OTel 配�
 另行执行了隔离的 N1 进程级冒烟（假传输、未连接 daemon/TUI）：故意触发未处理拒绝后，
 probe 返回 `exitCode=1`，summary.errors 含 `unhandled_rejection`，原始错误文本未落盘。
 
-## 真实 E1 复现命令与人工步骤（pending）
+## 真实 E1 复现命令与人工步骤
 
 以下命令必须只对人工确认拥有控制权的 daemon/thread 执行，不要填入其他 Codex 会话的
 endpoint 或 thread：
 
 ```powershell
-codex app-server daemon start
-codex app-server daemon version --json
+# Windows 不支持 daemon 生命周期命令。请在专用 PowerShell 中启动并保持运行：
+$port = 48765 # 仅使用已确认由当前实验独占的 loopback 端口
+codex app-server --listen "ws://127.0.0.1:$port"
 
-$endpoint = "ws://127.0.0.1:<owned-port>"
+# 在第二个专用 PowerShell 中启动 TUI：
+$endpoint = "ws://127.0.0.1:$port"
+codex --sandbox read-only --ask-for-approval on-request --remote $endpoint
+
+# 在第三个专用 PowerShell 中运行探针：
 $threadId = "<owned-active-thread-id>"
-$daemonVersion = "<exact daemon label from codex app-server daemon version --json>"
+$daemonVersion = "codex-tui 0.149.1"
 $run = Join-Path $env:TEMP ("codex-phase-six-" + [guid]::NewGuid().ToString("N"))
-codex --remote $endpoint
 node tools/observe-probe.mjs --endpoint $endpoint --out $run --thread-id $threadId `
   --schema-version v2 --daemon-version $daemonVersion --duration-ms 60000
 Get-Content (Join-Path $run "probe-summary.json")
@@ -80,10 +86,49 @@ Get-Content (Join-Path $run "probe-summary.json")
 `userAgent` 对应的精确标签。若标签不在探针的 tested daemon 集合中，结果会保留捕获但
 将 `captureSuggested` 标为 `true`，不能把它当作已验证指标运行。
 
+Windows 当前不支持 `app-server daemon` 生命周期子命令；本阶段实机使用人工确认拥有的
+loopback 前台服务：`codex app-server --listen ws://127.0.0.1:<owned-port>`。当前 CLI 的
+Initialize 返回值为复合 `userAgent`，探针只提取稳定的 `codex-tui 0.149.1` 版本标签，
+不把客户端名、系统版本或架构写入 daemon 版本判定。由于 `thread/resume` 的
+`excludeTurns` 字段要求实验 API capability，探针 initialize 只声明最小的
+`capabilities.experimentalApi=true`，不因此获得 observer/read-only 语义，也不改变发送白名单。
+
 人工按顺序执行：普通纯文本轮、工具调用轮、一个受控审批轮；确认 TUI 输入和渲染正常，
 并检查 summary 中 `serverRequests` 为空、`resume.excludeTurns` 为 `true`、thread ID
 不变、没有额外 turn/fork/replay。若观察者收到审批、用户输入、工具调用或认证刷新请求，
 探针必须立即退出；随后记录 TUI 是否被阻塞或接管，这种情形判 E1 失败。
+
+## 本次真实 E1 记录（2026-09-01，失败）
+
+实验使用人工确认拥有的 `ws://127.0.0.1:48765` 前台 app-server、显式
+`--sandbox read-only --ask-for-approval on-request` 的 TUI，以及
+`codex-tui 0.149.1`。普通纯文本轮和工具调用轮已被独立探针运行捕获；这些前置捕获
+没有审批请求，不能单独构成 E1 通过。
+
+受控审批轮使用了只写入临时目录的无害命令。探针运行目录 basename 为：
+`codex-phase-six-real-e1-approval-only-f85bef629b624046a11f2bff4d7cfe3e`（实际位置为
+当前用户的 `$env:TEMP`，不在仓库中）。
+探针终端结果为 `exitCode=1`、`e1Status=fail`；summary 的关键记录为：
+
+```json
+{
+  "serverRequest": {
+    "method": "item/commandExecution/requestApproval",
+    "kind": "approval",
+    "requestIdPresent": true,
+    "decision": "fail_closed_no_response"
+  },
+  "connection": {
+    "windowInvalidationReason": "e1_failure",
+    "reconnected": false
+  }
+}
+```
+
+探针没有回答 server request，也没有把命令参数写入产物；用户在真实 TUI 权限卡片上
+选择了 `No ... (Esc)`，随后确认卡片消失且 approval marker 文件不存在。因此该结果是
+真实的 E1 失败证据，不是权限卡片缺失或模拟通过。按照 rev4.2 的判定边界，本阶段不再
+启动 E2；`e2.status` 保持 `pending`，没有真实 E2 数值或性能结论。
 
 断连/重连场景使用独立新目录：
 
@@ -118,7 +163,8 @@ node tools/observe-probe.mjs --endpoint $endpoint --out $run --thread-id $thread
   token 消耗诊断。
 - 用户主动 abort/信号可正常收尾；`uncaughtException`/`unhandledRejection` 会记录脱敏
   错误并以 exit code 1 结束，不会被当作成功。
-- initialize 不宣告 `experimentalApi` 或非必要 capability；退订使用短超时且不改变
-  观测结论。
+- initialize 只宣告 `capabilities.experimentalApi=true`（当前服务端对
+  `thread/resume.excludeTurns` 的必要协商项），不宣告其他 capability；这不赋予 observer
+  角色或控制权限。退订使用短超时且不改变观测结论。
 - 输出目录独立于 `PLUGIN_DATA`/`TPS_PLUS_DATA_DIR/status`，summary 使用临时文件加原子
   rename；异常日志只写固定字段白名单。

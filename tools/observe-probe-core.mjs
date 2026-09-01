@@ -7,7 +7,18 @@ export const PROBE_VERSION = "phase-six-probe-0.1.0";
 export const TESTED_SCHEMA_VERSIONS = Object.freeze(["v2"]);
 // This is an observation guard, not a product-version compatibility promise. Add a
 // daemon here only after its app-server notification/response shape has been tested.
-export const TESTED_DAEMON_VERSIONS = Object.freeze(["codex-cli 0.149.1"]);
+export const TESTED_DAEMON_VERSIONS = Object.freeze([
+  "codex-cli 0.149.1",
+  "codex-tui 0.149.1",
+]);
+
+export function normalizeDaemonVersion(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const text = value.trim();
+  const stableMatch = text.match(/\b(codex-(?:tui|cli))\/([A-Za-z0-9._+-]+)/);
+  const stable = stableMatch ? `${stableMatch[1]} ${stableMatch[2]}` : text;
+  return stable.replace(/[^A-Za-z0-9 ._+-]/g, "_").slice(0, 120);
+}
 
 export const OUTGOING_METHOD_WHITELIST = Object.freeze([
   "initialize",
@@ -603,8 +614,9 @@ export class ProbeState {
   }
 
   setDaemonVersion(value, source = this.daemonVersionSource || "unknown") {
-    if (typeof value !== "string" || !value) return;
-    this.daemonVersion = value.replace(/[^A-Za-z0-9 ._+-]/g, "_").slice(0, 120);
+    const normalized = normalizeDaemonVersion(value);
+    if (!normalized) return;
+    this.daemonVersion = normalized;
     this.daemonVersionSource = source;
     this.updateCaptureSuggestion();
   }

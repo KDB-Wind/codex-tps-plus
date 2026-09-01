@@ -235,11 +235,17 @@ function safeTransportSummary(endpoint) {
   };
 }
 
-function initParams() {
+export function initParams() {
   return {
     clientInfo: {
       name: "codex-tps-plus-phase-six-probe",
       version: "phase-six-probe-0.1.0",
+    },
+    capabilities: {
+      // thread/resume.excludeTurns is gated behind this experimental API
+      // capability in the current app-server protocol. This is a negotiation
+      // flag only; the probe still sends no control or turn-start methods.
+      experimentalApi: true,
     },
   };
 }
