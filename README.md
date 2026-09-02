@@ -331,6 +331,13 @@ request/turn ID，因此运行时不会把 `1000 / TBT_ms` 冒充当前轮 TPS�
 [第四阶段延迟 TTFT 说明](plugins/codex-tps-plus/reports/phase-four.md) 和
 [第五阶段 OTel 实验报告](plugins/codex-tps-plus/reports/phase-five.md)。
 
+## Roadmap
+
+实时吞吐/TTFT/turn 级 usage 依赖 App Server 的只读会话事件流；phase-six 实验证实
+当前协议没有被动订阅者角色（审批等请求会扇出给订阅客户端），因此该方向暂缓。
+待上游提供 observer/read-only API 或可关联的 Hook/OTel 数据后恢复。当前稳定版
+v0.5.0 的指标边界与支持范围不变。
+
 ## 官方参考
 
 - [Codex Hooks](https://learn.chatgpt.com/docs/hooks)
