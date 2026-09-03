@@ -1,42 +1,37 @@
 ---
 name: tps
-description: Show delayed Codex CLI TTFT, request throughput including TTFT, weighted session values, and end-to-end turn throughput.
+description: Show Codex CLI non-reasoning end-to-end throughput, delayed completion timing and TTFT, weighted session values, and optional diagnostic references.
 ---
 
 Run the bundled `../../scripts/status.mjs --json`, resolving the path relative to this
-`SKILL.md`. Report the returned values directly and concisely. If the script reports
-no data, tell the user to complete one turn in a new Codex CLI session with the plugin
-hook trusted.
+`SKILL.md`. Report the returned values directly and concisely. If no data is available, tell the
+user to complete one turn in a new Codex CLI session with the plugin Hook trusted.
 
-The automatic Stop line and this command expose two related values:
+Lead with `latest.nonReasoningThroughput` and `session.nonReasoningThroughput`. Their numerator is
+`output_tokens - reasoning_output_tokens`; their denominator is end-to-end turn time, so call them
+non-reasoning output throughput, never pure-generation TPS. Mention that non-reasoning output can
+include generated tool-call arguments when that distinction matters.
 
-- `请求内吞吐（含首字）`: output tokens divided by inferred model-request intervals. The
-  intervals run from turn/request start to the last persisted model response item,
-  excluding tool execution between requests but including TTFT.
-- `整轮吞吐`: `sum(output_tokens) / sum(turn wall-clock seconds)`.
-- `TTFT`: the turn-level `task_complete.time_to_first_token_ms` value. Codex writes
-  `task_complete` after synchronous Stop hooks, so a background Stop handler backfills it. The
-  first automatic line cannot contain its own TTFT; the next line may say `上轮 TTFT`, while this
-  command can show the latest value after the backfill completes. If that background handler did not
-  run, the next synchronous Stop also recovers the previous turn's completed TTFT.
+Report `latest.durationSource` with the timing:
 
-The session TTFT mean is the arithmetic mean across turns with a successfully backfilled TTFT. It
-is not token-weighted. Do not treat a missing TTFT as zero.
+- `task_complete` is the delayed authoritative `task_complete.duration_ms` value.
+- `stop_wall_clock` is the provisional synchronous Stop measurement used until completion backfill.
 
-Do not call request throughput TPS. It includes TTFT and depends on unstable transcript
-event ordering, so it is not exact pure-generation TPS. `短回复参考` means the latest
-turn averaged fewer than 128 output tokens per inferred request; this is a display
-warning because TTFT can dominate short responses, not a correction to the value.
-Only report request throughput when `requestCoverageComplete` is true. If any output-bearing
-request interval is unestimated, explain that the plugin deliberately falls back to whole-turn
-throughput rather than presenting a partial request sample as the whole turn.
-Turn throughput can additionally include tools and waiting. `reasoning_output_tokens`
-is already a subset of `output_tokens` and must not be added again.
+Show total output, reasoning, and non-reasoning counts without adding reasoning again. If
+`reasoningBreakdownAvailable` is false, report the explicitly labeled `totalOutputThroughput`
+fallback; do not infer or mix a non-reasoning session average from that record.
 
-When the user asks about native OTel, explain that Codex service TBT can be converted
-with `1000 / TBT_ms`, but OTLP metrics are batch-exported and carry no request/turn ID
-in the verified capture, so the Stop hook cannot safely attach them to the current turn. If
-`nativeOtel` is present, report its `confidence` exactly: `capture-aggregate` is a capture reference;
-`isolated-window-candidate` means one receiver identity, one conversation, and one completed turn.
-Both remain unattributed to the live Stop and are never current-turn or exact per-request TPS.
-Mention `shortOutputReference` when true because very short outputs can make reciprocal TBT unstable.
+TTFT comes from `task_complete.time_to_first_token_ms`. Completion duration and TTFT are validated
+and backfilled independently, so either may be available without the other. The first automatic
+line cannot contain its own TTFT; a later query can, and the next line may label it `上轮 TTFT`.
+The session TTFT mean is arithmetic across turns with a valid TTFT, not token-weighted.
+
+Only discuss `requestThroughput` when the user asks for diagnostics. It uses non-reasoning output
+over transcript-inferred request intervals, includes TTFT, depends on unstable event ordering, and
+is not an exact request rate or generation TPS. Require `requestCoverageComplete` and identify it as
+a heuristic reference. `requestIntervalTotalOutputThroughput` is the corresponding legacy-style
+total-output comparison.
+
+For native OTel, report `confidence` exactly. `capture-aggregate` is a capture reference;
+`isolated-window-candidate` is still unattributed to the live Stop. Neither is current-turn or exact
+per-request TPS. Mention `shortOutputReference` when true.

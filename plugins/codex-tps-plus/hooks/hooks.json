@@ -1,5 +1,5 @@
 {
-  "description": "Codex throughput display plus delayed TTFT backfill; missing version caches fall back safely through PLUGIN_DATA.",
+  "description": "Codex non-reasoning end-to-end throughput plus delayed completion timing; missing version caches fall back safely through PLUGIN_DATA.",
   "hooks": {
     "Stop": [
       {

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const STATUS_SCHEMA_VERSION = 5;
+const STATUS_SCHEMA_VERSION = 6;
 const SHORT_RESPONSE_TOKENS_PER_REQUEST = 128;
 const INITIAL_TAIL_BYTES = 256 * 1024;
 const MAX_TAIL_BYTES = 16 * 1024 * 1024;
@@ -32,7 +32,10 @@ function usageFrom(payload) {
   if (outputTokens === null || outputTokens < 0) return null;
   return {
     outputTokens,
-    reasoningTokens: reasoningTokens !== null && reasoningTokens >= 0 ? reasoningTokens : null,
+    reasoningTokens:
+      reasoningTokens !== null && reasoningTokens >= 0 && reasoningTokens <= outputTokens
+        ? reasoningTokens
+        : null,
     totalOutputTokens: totalOutputTokens !== null && totalOutputTokens >= 0 ? totalOutputTokens : null,
   };
 }
@@ -79,6 +82,8 @@ function scanCurrentTurn(text, currentTurnId) {
   let latestModelActivityAtMs = null;
   let requestDurationMs = 0;
   let estimatedOutputTokens = 0;
+  let estimatedReasoningTokens = 0;
+  let estimatedReasoningKnown = true;
   let estimatedRequestCount = 0;
   let unestimatedRequestCount = 0;
   const seenCumulativeOutput = new Set();
@@ -110,6 +115,8 @@ function scanCurrentTurn(text, currentTurnId) {
         latestModelActivityAtMs = null;
         requestDurationMs = 0;
         estimatedOutputTokens = 0;
+        estimatedReasoningTokens = 0;
+        estimatedReasoningKnown = true;
         estimatedRequestCount = 0;
         unestimatedRequestCount = 0;
         seenCumulativeOutput.clear();
@@ -162,6 +169,8 @@ function scanCurrentTurn(text, currentTurnId) {
         if (intervalDurationMs <= MAX_TURN_DURATION_MS) {
           requestDurationMs += intervalDurationMs;
           estimatedOutputTokens += usage.outputTokens;
+          if (usage.reasoningTokens === null) estimatedReasoningKnown = false;
+          else estimatedReasoningTokens += usage.reasoningTokens;
           estimatedRequestCount += 1;
         } else {
           unestimatedRequestCount += 1;
@@ -189,12 +198,16 @@ function scanCurrentTurn(text, currentTurnId) {
     startedAtMs,
     outputTokens,
     reasoningTokens: reasoningKnown ? reasoningTokens : null,
+    nonReasoningOutputTokens: reasoningKnown ? outputTokens - reasoningTokens : null,
     tokenCountEvents,
     duplicateTokenCountEvents,
     toolCallCount,
     parseErrorCount,
     requestDurationMs,
     estimatedOutputTokens,
+    estimatedReasoningTokens: estimatedReasoningKnown ? estimatedReasoningTokens : null,
+    estimatedNonReasoningOutputTokens:
+      estimatedReasoningKnown ? estimatedOutputTokens - estimatedReasoningTokens : null,
     estimatedRequestCount,
     unestimatedRequestCount,
   };
@@ -273,6 +286,34 @@ function scanPreviousTurnCompletion(text, currentTurnId) {
   return { foundCurrentStart, previous, parseErrorCount };
 }
 
+function validatedCompletion(scanned, metadata = {}) {
+  const rawTtftMs = finiteNumber(scanned?.ttftMs);
+  const rawCompletedDurationMs = finiteNumber(scanned?.completedDurationMs);
+  const completedDurationMs =
+    rawCompletedDurationMs !== null &&
+    rawCompletedDurationMs > 0 &&
+    rawCompletedDurationMs <= MAX_TURN_DURATION_MS
+      ? rawCompletedDurationMs
+      : null;
+  const ttftMs =
+    rawTtftMs !== null &&
+    rawTtftMs >= 0 &&
+    rawTtftMs <= MAX_TURN_DURATION_MS &&
+    (completedDurationMs === null || rawTtftMs <= completedDurationMs)
+      ? rawTtftMs
+      : null;
+  if (ttftMs === null && completedDurationMs === null) {
+    return { available: false, reason: "completion_timing_missing_or_invalid", ...metadata };
+  }
+  return {
+    available: true,
+    source: "transcript-task-complete-delayed",
+    ttftMs,
+    completedDurationMs,
+    ...metadata,
+  };
+}
+
 export function extractTurnCompletion(transcriptPath, currentTurnId, options = {}) {
   if (typeof transcriptPath !== "string" || !transcriptPath) {
     return { available: false, reason: "transcript_not_provided" };
@@ -304,27 +345,10 @@ export function extractTurnCompletion(transcriptPath, currentTurnId, options = {
       scannedBytes: tail.sizeBytes - tail.start,
     };
   }
-  const ttftMs = scanned.ttftMs;
-  const completedDurationMs = scanned.completedDurationMs;
-  if (ttftMs === null || ttftMs < 0 || ttftMs > MAX_TURN_DURATION_MS) {
-    return { available: false, reason: "ttft_missing_or_invalid" };
-  }
-  if (
-    completedDurationMs !== null &&
-    (completedDurationMs <= 0 ||
-      completedDurationMs > MAX_TURN_DURATION_MS ||
-      ttftMs > completedDurationMs)
-  ) {
-    return { available: false, reason: "completion_duration_invalid" };
-  }
-  return {
-    available: true,
-    source: "transcript-task-complete-delayed",
-    ttftMs,
-    completedDurationMs,
+  return validatedCompletion(scanned, {
     parseErrorCount: scanned.parseErrorCount,
     scannedBytes: tail.sizeBytes - tail.start,
-  };
+  });
 }
 
 export function extractPreviousTurnCompletion(transcriptPath, currentTurnId, options = {}) {
@@ -371,27 +395,11 @@ export function extractPreviousTurnCompletion(transcriptPath, currentTurnId, opt
       scannedBytes: tail.sizeBytes - tail.start,
     };
   }
-  const { turnId, ttftMs, completedDurationMs } = scanned.previous;
-  if (ttftMs === null || ttftMs < 0 || ttftMs > MAX_TURN_DURATION_MS) {
-    return { available: false, reason: "ttft_missing_or_invalid" };
-  }
-  if (
-    completedDurationMs !== null &&
-    (completedDurationMs <= 0 ||
-      completedDurationMs > MAX_TURN_DURATION_MS ||
-      ttftMs > completedDurationMs)
-  ) {
-    return { available: false, reason: "completion_duration_invalid" };
-  }
-  return {
-    available: true,
-    source: "transcript-task-complete-delayed",
-    turnId,
-    ttftMs,
-    completedDurationMs,
+  return validatedCompletion(scanned.previous, {
+    turnId: scanned.previous.turnId,
     parseErrorCount: scanned.parseErrorCount,
     scannedBytes: tail.sizeBytes - tail.start,
-  };
+  });
 }
 
 export function extractStopMetric(transcriptPath, currentTurnId, options = {}) {
@@ -439,19 +447,34 @@ export function extractStopMetric(transcriptPath, currentTurnId, options = {}) {
     return { available: false, reason: "turn_duration_invalid" };
   }
 
+  const nonReasoningOutputTokens = scanned.nonReasoningOutputTokens;
+  const estimatedNonReasoningOutputTokens = scanned.estimatedNonReasoningOutputTokens;
   return {
     available: true,
-    source: "transcript-request-intervals-including-ttft",
+    source: "transcript-end-to-end-with-request-interval-diagnostics",
     outputTokens: scanned.outputTokens,
     reasoningTokens: scanned.reasoningTokens,
+    nonReasoningOutputTokens,
     durationMs,
-    throughput: scanned.outputTokens / (durationMs / 1000),
+    throughput:
+      nonReasoningOutputTokens !== null && nonReasoningOutputTokens > 0
+        ? nonReasoningOutputTokens / (durationMs / 1000)
+        : null,
+    totalOutputThroughput: scanned.outputTokens / (durationMs / 1000),
     requestThroughput:
+      scanned.requestDurationMs > 0 &&
+      estimatedNonReasoningOutputTokens !== null &&
+      estimatedNonReasoningOutputTokens > 0
+        ? estimatedNonReasoningOutputTokens / (scanned.requestDurationMs / 1000)
+        : null,
+    requestIntervalTotalOutputThroughput:
       scanned.requestDurationMs > 0 && scanned.estimatedOutputTokens > 0
         ? scanned.estimatedOutputTokens / (scanned.requestDurationMs / 1000)
         : null,
     requestDurationMs: scanned.requestDurationMs || null,
     estimatedOutputTokens: scanned.estimatedOutputTokens,
+    estimatedReasoningTokens: scanned.estimatedReasoningTokens,
+    estimatedNonReasoningOutputTokens,
     estimatedRequestCount: scanned.estimatedRequestCount,
     unestimatedRequestCount: scanned.unestimatedRequestCount,
     tokenCountEvents: scanned.tokenCountEvents,
@@ -474,11 +497,85 @@ function sessionDirectory(dataDir, sessionId) {
   return sessionHash ? path.join(dataDir, "status", sessionHash) : null;
 }
 
+function validDurationMs(value) {
+  const durationMs = finiteNumber(value);
+  return durationMs !== null && durationMs > 0 && durationMs <= MAX_TURN_DURATION_MS
+    ? durationMs
+    : null;
+}
+
+function completedDurationForRecord(record) {
+  return validDurationMs(record?.completedDurationMs);
+}
+
+function endToEndDurationForRecord(record) {
+  return completedDurationForRecord(record) ?? validDurationMs(record?.durationMs);
+}
+
+function reasoningOutputForRecord(record) {
+  const outputTokens = finiteNumber(record?.outputTokens);
+  if (outputTokens === null || outputTokens < 0) return null;
+  const reasoningTokens = finiteNumber(record?.reasoningTokens);
+  if (reasoningTokens !== null && reasoningTokens >= 0 && reasoningTokens <= outputTokens) {
+    return reasoningTokens;
+  }
+  const explicitNonReasoning = finiteNumber(record?.nonReasoningOutputTokens);
+  if (
+    explicitNonReasoning !== null &&
+    explicitNonReasoning >= 0 &&
+    explicitNonReasoning <= outputTokens
+  ) {
+    return outputTokens - explicitNonReasoning;
+  }
+  return null;
+}
+
+function nonReasoningOutputForRecord(record) {
+  const outputTokens = finiteNumber(record?.outputTokens);
+  const reasoningTokens = reasoningOutputForRecord(record);
+  return outputTokens !== null && reasoningTokens !== null ? outputTokens - reasoningTokens : null;
+}
+
+function validTtftForRecord(record) {
+  const ttftMs = finiteNumber(record?.ttftMs);
+  const durationMs = endToEndDurationForRecord(record);
+  if (
+    ttftMs === null ||
+    ttftMs < 0 ||
+    ttftMs > MAX_TURN_DURATION_MS ||
+    (durationMs !== null && ttftMs > durationMs)
+  ) {
+    return null;
+  }
+  return ttftMs;
+}
+
+function estimatedNonReasoningOutputForRecord(record) {
+  const estimatedOutputTokens = finiteNumber(record?.estimatedOutputTokens);
+  if (estimatedOutputTokens === null || estimatedOutputTokens < 0) return null;
+  const explicit = finiteNumber(record?.estimatedNonReasoningOutputTokens);
+  if (explicit !== null && explicit >= 0 && explicit <= estimatedOutputTokens) return explicit;
+  const estimatedReasoningTokens = finiteNumber(record?.estimatedReasoningTokens);
+  if (
+    estimatedReasoningTokens !== null &&
+    estimatedReasoningTokens >= 0 &&
+    estimatedReasoningTokens <= estimatedOutputTokens
+  ) {
+    return estimatedOutputTokens - estimatedReasoningTokens;
+  }
+  if ((finiteNumber(record?.unestimatedRequestCount) ?? 0) !== 0) return null;
+  const reasoningTokens = finiteNumber(record?.reasoningTokens);
+  if (reasoningTokens === null || reasoningTokens < 0 || reasoningTokens > estimatedOutputTokens) {
+    return null;
+  }
+  return estimatedOutputTokens - reasoningTokens;
+}
+
 function hasCompleteRequestMeasurement(record) {
   return (
-    finiteNumber(record?.estimatedOutputTokens) > 0 &&
+    estimatedNonReasoningOutputForRecord(record) > 0 &&
     finiteNumber(record?.estimatedRequestCount) > 0 &&
-    finiteNumber(record?.requestDurationMs ?? record?.inferenceDurationMs) > 0 &&
+    validDurationMs(record?.requestDurationMs ?? record?.inferenceDurationMs) !== null &&
     (finiteNumber(record?.unestimatedRequestCount) ?? 0) === 0
   );
 }
@@ -504,10 +601,10 @@ function readStatusRecords(directory) {
     try {
       const record = JSON.parse(fs.readFileSync(entry.file, "utf8"));
       if (
-        [1, 2, 3, 4, STATUS_SCHEMA_VERSION].includes(record?.schemaVersion) &&
+        [1, 2, 3, 4, 5, STATUS_SCHEMA_VERSION].includes(record?.schemaVersion) &&
         typeof record.turnId === "string" &&
         finiteNumber(record.outputTokens) > 0 &&
-        finiteNumber(record.durationMs) > 0
+        endToEndDurationForRecord(record) !== null
       ) {
         byTurn.set(record.turnId, { ...record, __entry: entry });
       }
@@ -550,13 +647,38 @@ export function pruneStatusFiles(directory, fileSystem = fs) {
 
 export function summarizeStatusRecords(records) {
   const valid = (records || []).filter(
-    (record) => finiteNumber(record.outputTokens) > 0 && finiteNumber(record.durationMs) > 0
+    (record) => finiteNumber(record.outputTokens) > 0 && endToEndDurationForRecord(record) !== null
   );
-  const outputTokens = valid.reduce((total, record) => total + record.outputTokens, 0);
-  const durationMs = valid.reduce((total, record) => total + record.durationMs, 0);
   const latest = valid.at(-1) || null;
+  const latestNonReasoningOutputTokens = nonReasoningOutputForRecord(latest);
+  const latestReasoningBreakdownAvailable = latestNonReasoningOutputTokens !== null;
+  const latestUsesNonReasoning =
+    latestReasoningBreakdownAvailable && latestNonReasoningOutputTokens > 0;
+  const nonReasoningMeasured = valid.filter((record) => nonReasoningOutputForRecord(record) > 0);
+  const totalOutputTokens = valid.reduce((total, record) => total + record.outputTokens, 0);
+  const totalDurationMs = valid.reduce(
+    (total, record) => total + endToEndDurationForRecord(record),
+    0
+  );
+  const nonReasoningOutputTokens = nonReasoningMeasured.reduce(
+    (total, record) => total + nonReasoningOutputForRecord(record),
+    0
+  );
+  const nonReasoningDurationMs = nonReasoningMeasured.reduce(
+    (total, record) => total + endToEndDurationForRecord(record),
+    0
+  );
+  const primaryRecords = latestUsesNonReasoning ? nonReasoningMeasured : valid;
+  const primaryDurationMs = latestUsesNonReasoning ? nonReasoningDurationMs : totalDurationMs;
+  const primaryOutputTokens = latestUsesNonReasoning
+    ? nonReasoningOutputTokens
+    : totalOutputTokens;
   const requestMeasured = valid.filter(hasCompleteRequestMeasurement);
   const requestOutputTokens = requestMeasured.reduce(
+    (total, record) => total + estimatedNonReasoningOutputForRecord(record),
+    0
+  );
+  const requestTotalOutputTokens = requestMeasured.reduce(
     (total, record) => total + record.estimatedOutputTokens,
     0
   );
@@ -564,7 +686,10 @@ export function summarizeStatusRecords(records) {
     (total, record) => total + (record.requestDurationMs ?? record.inferenceDurationMs),
     0
   );
-  const latestRequestDurationMs = latest?.requestDurationMs ?? latest?.inferenceDurationMs ?? null;
+  const latestRequestDurationMs = validDurationMs(
+    latest?.requestDurationMs ?? latest?.inferenceDurationMs
+  );
+  const latestEstimatedNonReasoningOutputTokens = estimatedNonReasoningOutputForRecord(latest);
   const latestEstimatedRequestCount = finiteNumber(latest?.estimatedRequestCount) ?? 0;
   const latestRequestCoverageComplete = latest ? hasCompleteRequestMeasurement(latest) : false;
   const latestMeanOutputTokensPerRequest =
@@ -572,35 +697,68 @@ export function summarizeStatusRecords(records) {
       ? latest.estimatedOutputTokens / latestEstimatedRequestCount
       : null;
   const ttftMeasured = valid.filter((record) => {
-    const ttftMs = finiteNumber(record?.ttftMs);
-    return ttftMs !== null && ttftMs >= 0;
+    return validTtftForRecord(record) !== null;
   });
   const latestTtftRecord = ttftMeasured.at(-1) || null;
-  const ttftTotalMs = ttftMeasured.reduce((total, record) => total + finiteNumber(record.ttftMs), 0);
+  const ttftTotalMs = ttftMeasured.reduce(
+    (total, record) => total + validTtftForRecord(record),
+    0
+  );
+  const latestDurationMs = endToEndDurationForRecord(latest);
+  const latestCompletedDurationMs = completedDurationForRecord(latest);
+  const latestTotalOutputThroughput = latest
+    ? latest.outputTokens / (latestDurationMs / 1000)
+    : null;
+  const latestNonReasoningThroughput = latestUsesNonReasoning
+    ? latestNonReasoningOutputTokens / (latestDurationMs / 1000)
+    : null;
+  const sessionTotalOutputThroughput =
+    totalOutputTokens > 0 && totalDurationMs > 0
+      ? totalOutputTokens / (totalDurationMs / 1000)
+      : null;
+  const sessionNonReasoningThroughput =
+    nonReasoningOutputTokens > 0 && nonReasoningDurationMs > 0
+      ? nonReasoningOutputTokens / (nonReasoningDurationMs / 1000)
+      : null;
   return {
     available: Boolean(latest),
-    metric: latestRequestCoverageComplete
-      ? "model_request_throughput_including_ttft"
-      : "end_to_end_turn_throughput",
+    metric: latestUsesNonReasoning
+      ? "non_reasoning_output_end_to_end_throughput"
+      : "total_output_end_to_end_throughput",
     isPureGenerationTps: false,
     requestThroughputIncludesTtft: latestRequestCoverageComplete,
     requestThroughputMethod: latestRequestCoverageComplete
-      ? "transcript-model-request-intervals-including-ttft"
+      ? "transcript-heuristic-request-intervals-including-ttft"
       : null,
     turns: valid.length,
     latest: latest
       ? {
           outputTokens: latest.outputTokens,
-          reasoningTokens: latest.reasoningTokens ?? null,
-          durationMs: latest.durationMs,
-          throughput: latest.outputTokens / (latest.durationMs / 1000),
+          reasoningTokens: reasoningOutputForRecord(latest),
+          nonReasoningOutputTokens: latestNonReasoningOutputTokens,
+          reasoningBreakdownAvailable: latestReasoningBreakdownAvailable,
+          stopDurationMs: validDurationMs(latest.durationMs),
+          durationMs: latestDurationMs,
+          durationSource: latestCompletedDurationMs !== null ? "task_complete" : "stop_wall_clock",
+          durationFinal: latestCompletedDurationMs !== null,
+          throughput: latestUsesNonReasoning
+            ? latestNonReasoningThroughput
+            : latestTotalOutputThroughput,
+          nonReasoningThroughput: latestNonReasoningThroughput,
+          totalOutputThroughput: latestTotalOutputThroughput,
           requestThroughput:
+            latestRequestCoverageComplete
+              ? latestEstimatedNonReasoningOutputTokens / (latestRequestDurationMs / 1000)
+              : null,
+          requestIntervalTotalOutputThroughput:
             latestRequestCoverageComplete
               ? latest.estimatedOutputTokens / (latestRequestDurationMs / 1000)
               : null,
           requestCoverageComplete: latestRequestCoverageComplete,
           requestDurationMs: latestRequestDurationMs,
           estimatedOutputTokens: latest.estimatedOutputTokens ?? 0,
+          estimatedReasoningTokens: latest.estimatedReasoningTokens ?? null,
+          estimatedNonReasoningOutputTokens: latestEstimatedNonReasoningOutputTokens,
           estimatedRequestCount: latestEstimatedRequestCount,
           meanOutputTokensPerRequest: latestMeanOutputTokensPerRequest,
           shortResponseReference:
@@ -611,22 +769,38 @@ export function summarizeStatusRecords(records) {
           tokenCountEvents: latest.tokenCountEvents,
           duplicateTokenCountEvents: latest.duplicateTokenCountEvents ?? 0,
           toolCallCount: latest.toolCallCount,
-          ttftMs: finiteNumber(latest.ttftMs),
-          completedDurationMs: finiteNumber(latest.completedDurationMs),
+          ttftMs: validTtftForRecord(latest),
+          ttftShare:
+            validTtftForRecord(latest) !== null && latestDurationMs > 0
+              ? validTtftForRecord(latest) / latestDurationMs
+              : null,
+          completedDurationMs: latestCompletedDurationMs,
           timingSource: typeof latest.timingSource === "string" ? latest.timingSource : null,
           capturedAt: latest.capturedAt,
         }
       : null,
     session: latest
       ? {
-          outputTokens,
-          durationMs,
-          throughput: outputTokens / (durationMs / 1000),
+          outputTokens: totalOutputTokens,
+          reasoningTokens: nonReasoningMeasured.reduce(
+            (total, record) => total + reasoningOutputForRecord(record),
+            0
+          ),
+          nonReasoningOutputTokens,
+          reasoningMeasuredTurns: nonReasoningMeasured.length,
+          measuredTurns: primaryRecords.length,
+          durationMs: primaryDurationMs,
+          totalDurationMs,
+          nonReasoningDurationMs,
+          throughput: primaryOutputTokens / (primaryDurationMs / 1000),
+          nonReasoningThroughput: sessionNonReasoningThroughput,
+          totalOutputThroughput: sessionTotalOutputThroughput,
           requestThroughput:
             requestOutputTokens > 0 && requestDurationMs > 0
               ? requestOutputTokens / (requestDurationMs / 1000)
               : null,
           requestOutputTokens,
+          requestTotalOutputTokens,
           requestDurationMs,
           requestMeasuredTurns: requestMeasured.length,
           ttftMeasuredTurns: ttftMeasured.length,
@@ -635,7 +809,7 @@ export function summarizeStatusRecords(records) {
       : null,
     mostRecentTtft: latestTtftRecord
       ? {
-          ttftMs: finiteNumber(latestTtftRecord.ttftMs),
+          ttftMs: validTtftForRecord(latestTtftRecord),
           completedDurationMs: finiteNumber(latestTtftRecord.completedDurationMs),
           timingSource:
             typeof latestTtftRecord.timingSource === "string"
@@ -673,9 +847,12 @@ export function recordStopMetric({ dataDir, sessionId, turnId, metric, capturedA
     source: metric.source,
     outputTokens: metric.outputTokens,
     reasoningTokens: metric.reasoningTokens,
+    nonReasoningOutputTokens: metric.nonReasoningOutputTokens,
     durationMs: metric.durationMs,
     requestDurationMs: metric.requestDurationMs,
     estimatedOutputTokens: metric.estimatedOutputTokens,
+    estimatedReasoningTokens: metric.estimatedReasoningTokens,
+    estimatedNonReasoningOutputTokens: metric.estimatedNonReasoningOutputTokens,
     estimatedRequestCount: metric.estimatedRequestCount,
     unestimatedRequestCount: metric.unestimatedRequestCount,
     tokenCountEvents: metric.tokenCountEvents,
@@ -724,9 +901,20 @@ export function backfillTurnCompletion({
   const matching = readStatusRecords(directory).filter((record) => record.turnId === turnHash);
   const current = matching.at(-1);
   if (!current) return { updated: false, reason: "status_record_not_ready" };
+  const nextCompletedDurationMs =
+    validDurationMs(completion.completedDurationMs) ?? completedDurationForRecord(current);
+  const candidateCurrentTtftMs = validTtftForRecord(current);
+  const candidateCompletionTtftMs = finiteNumber(completion.ttftMs);
+  const nextTtftMs =
+    candidateCompletionTtftMs !== null &&
+    candidateCompletionTtftMs >= 0 &&
+    candidateCompletionTtftMs <= MAX_TURN_DURATION_MS &&
+    (nextCompletedDurationMs === null || candidateCompletionTtftMs <= nextCompletedDurationMs)
+      ? candidateCompletionTtftMs
+      : candidateCurrentTtftMs;
   if (
-    finiteNumber(current.ttftMs) === completion.ttftMs &&
-    finiteNumber(current.completedDurationMs) === completion.completedDurationMs
+    finiteNumber(current.ttftMs) === nextTtftMs &&
+    completedDurationForRecord(current) === nextCompletedDurationMs
   ) {
     return { updated: false, reason: "already_backfilled" };
   }
@@ -739,8 +927,8 @@ export function backfillTurnCompletion({
   delete replacement.__entry;
   Object.assign(replacement, {
     schemaVersion: STATUS_SCHEMA_VERSION,
-    ttftMs: completion.ttftMs,
-    completedDurationMs: completion.completedDurationMs,
+    ttftMs: nextTtftMs,
+    completedDurationMs: nextCompletedDurationMs,
     timingSource,
     timingCapturedAt: safeTimingCapturedAt.toISOString(),
   });
@@ -817,7 +1005,7 @@ function compactDuration(durationMs) {
   return `${minutes}m${seconds}s`;
 }
 
-export function formatStatusLine(status, label = "整轮吞吐") {
+export function formatStatusLine(status) {
   if (!status?.available || !status.latest || !status.session) return null;
   const ttft = status.mostRecentTtft;
   const ttftSuffix = ttft
@@ -828,13 +1016,17 @@ export function formatStatusLine(status, label = "整轮吞吐") {
         status.nativeOtel.confidence === "isolated-window-candidate" ? "单轮候选" : "捕获参考"
       }·未归轮${status.nativeOtel.shortOutputReference ? "·短输出" : ""}）`
     : "";
-  if (status.latest.requestThroughput && status.session.requestThroughput) {
-    const qualifier = status.latest.shortResponseReference
-      ? "（含首字·短回复参考）"
-      : "（含首字）";
-    return `⚡ 请求内吞吐 ${status.latest.requestThroughput.toFixed(1)} tok/s${qualifier} · 会话请求内 ${status.session.requestThroughput.toFixed(1)} tok/s · 整轮 ${status.latest.throughput.toFixed(1)} tok/s · 输出 ${compactNumber(status.latest.outputTokens)} tok · 轮耗时 ${compactDuration(status.latest.durationMs)}${ttftSuffix}${nativeOtelSuffix}`;
+  if (
+    status.latest.reasoningBreakdownAvailable &&
+    status.latest.nonReasoningThroughput &&
+    status.session.nonReasoningThroughput
+  ) {
+    return `⚡ 非推理输出吞吐 ${status.latest.nonReasoningThroughput.toFixed(1)} tok/s · 会话 ${status.session.nonReasoningThroughput.toFixed(1)} tok/s · 非推理 ${compactNumber(status.latest.nonReasoningOutputTokens)} tok · 推理 ${compactNumber(status.latest.reasoningTokens)} tok · 总输出 ${compactNumber(status.latest.outputTokens)} tok · 轮耗时 ${compactDuration(status.latest.durationMs)}${ttftSuffix}${nativeOtelSuffix}`;
   }
-  return `⚡ ${label} ${status.latest.throughput.toFixed(1)} tok/s · 会话吞吐 ${status.session.throughput.toFixed(1)} tok/s · 输出 ${compactNumber(status.latest.outputTokens)} tok · 耗时 ${compactDuration(status.latest.durationMs)}${ttftSuffix}${nativeOtelSuffix}`;
+  if (status.latest.reasoningBreakdownAvailable) {
+    return `⚡ 总输出整轮吞吐 ${status.latest.totalOutputThroughput.toFixed(1)} tok/s · 会话总输出 ${status.session.totalOutputThroughput.toFixed(1)} tok/s · 非推理 ${compactNumber(status.latest.nonReasoningOutputTokens)} tok · 推理 ${compactNumber(status.latest.reasoningTokens)} tok · 总输出 ${compactNumber(status.latest.outputTokens)} tok · 轮耗时 ${compactDuration(status.latest.durationMs)}${ttftSuffix}${nativeOtelSuffix}`;
+  }
+  return `⚡ 总输出整轮吞吐 ${status.latest.totalOutputThroughput.toFixed(1)} tok/s · 会话总输出 ${status.session.totalOutputThroughput.toFixed(1)} tok/s · 总输出 ${compactNumber(status.latest.outputTokens)} tok · 推理拆分缺失 · 轮耗时 ${compactDuration(status.latest.durationMs)}${ttftSuffix}${nativeOtelSuffix}`;
 }
 
 export function captureStopStatus(input, options = {}) {

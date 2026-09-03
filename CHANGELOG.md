@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0 - 2026-09-04
+
+- Make non-reasoning output divided by end-to-end turn duration the primary automatic and session
+  throughput, while keeping total output and reasoning counts explicit.
+- Prefer backfilled `task_complete.duration_ms` over the provisional synchronous Stop wall clock.
+- Backfill completion duration independently from TTFT so either valid timing can survive when the
+  other is missing or invalid.
+- Demote transcript-inferred request intervals to JSON diagnostics and use non-reasoning output for
+  that reference instead of presenting it as the default rate.
+- Keep v1-v5 status records readable, deriving the new numerator only when their reasoning split is
+  complete and valid; otherwise label the total-output fallback explicitly.
+- Add regression coverage for invalid reasoning splits, duration-only completion, exact-duration
+  replacement, mixed session samples, stable runtime, and strict Hook output.
+- Correct second-based timestamp fallbacks in the probe metric model and forward root doctor CLI
+  arguments so `npm run doctor -- --json` reaches the doctor's JSON mode as documented.
+- Prepare this version as a local-only candidate with no tag, push, marketplace update, or remote
+  release.
+
 ## 0.5.0 - 2026-09-01
 
 - Promote the explicit localhost OTLP receiver to `otel.mjs serve`, with an exclusive directory

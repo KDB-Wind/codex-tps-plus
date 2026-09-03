@@ -1,10 +1,26 @@
 # Release checklist
 
-This repository is release-ready only when every required item below is proven by current evidence.
+## Local 0.6.0 candidate boundary
+
+- [x] The repository, plugin package, and plugin manifest identify the local-only candidate `0.6.0`.
+- [x] The accuracy contract is frozen in `PLAN-0.6.0.md`.
+- [x] Local unit, Hook contract, privacy, retention, doctor, and marketplace release checks pass.
+- [x] No `v0.6.0` tag is created.
+- [x] No branch, tag, package, marketplace update, or GitHub Release is pushed or published remotely.
+- [ ] Cross-platform CI and public-install smoke tests are intentionally deferred until a future remote release is requested.
 
 ## Product contract
 
-- [x] The automatic line calls the measured value request throughput, not pure generation TPS.
+- [x] The automatic line leads with non-reasoning output divided by end-to-end turn duration.
+- [x] `reasoning_output_tokens` is validated as a subset, subtracted once from the primary numerator,
+      and retained as a separate display field.
+- [x] A valid `task_complete.duration_ms` replaces the provisional Stop wall-clock denominator after
+      backfill; missing TTFT does not block that correction.
+- [x] Session throughput is token-and-duration weighted and does not mix records whose reasoning
+      breakdown is unavailable into the non-reasoning average.
+- [x] Missing or invalid reasoning breakdown degrades to an explicitly named total-output fallback.
+- [x] Transcript-inferred request intervals remain available only as a diagnostic reference and are
+      not presented as the default rate or pure-generation TPS.
 - [x] TTFT comes from Codex `task_complete.time_to_first_token_ms` and is backfilled asynchronously.
 - [x] Unattributed OTel TBT is labeled as a capture reference or isolated single-turn candidate,
       always marked unjoined to the current turn.
@@ -14,47 +30,29 @@ This repository is release-ready only when every required item below is proven b
 
 ## Runtime evidence
 
-- [x] A clean interactive Codex CLI session loads both Stop Hook handlers.
-- [x] The synchronous handler emits strict JSON and displays throughput.
-- [x] The background handler automatically persists TTFT after `task_complete` appears.
-- [x] The next automatic line displays the previous turn's TTFT.
+- [x] The synchronous handler emits strict JSON and persists only redacted numeric status.
+- [x] The background handler independently backfills available TTFT and completion duration.
+- [x] A later synchronous Stop recovers the previous turn's timing if asynchronous backfill was missed.
 - [x] Installed-cache execution through a Windows directory junction is covered by regression tests.
 - [x] Removed version caches degrade to strict empty JSON instead of a failed Hook.
-- [x] A normal Stop seeds a bounded stable runtime, and display plus TTFT backfill work through it.
-- [x] A later synchronous Stop recovers the previous turn's TTFT if asynchronous backfill was missed.
+- [x] Stable runtime snapshots remain bounded and cannot be rolled back by an older plugin root.
 - [x] The local receiver is loopback-only, directory-exclusive, atomically written, and bounded by
       body, payload-count, and total-byte limits.
-- [x] Controlled single-request, multi-request, concurrent-session, flush, transport-signal, and
-      subagent experiments exercise the documented OTel degradation boundaries.
+- [x] The phase-six observer remains capture-only for untested schemas/daemons and does not gain a
+      passive App Server role.
 
-## Distribution
+## Distribution and safety
 
 - [x] The repository contains `.agents/plugins/marketplace.json`.
 - [x] The plugin is located at `plugins/codex-tps-plus` and has a valid manifest.
-- [x] Public install and upgrade commands are documented in README.
-- [x] A clean temporary `CODEX_HOME` installs and enables `codex-tps-plus@kdb-wind` version 0.5.0
-      directly from the public `v0.5.0` Git ref.
-- [x] Manifest, root package, and plugin package use the same release version.
-- [x] The release manifest contains no local cachebuster suffix.
-
-## Quality and safety
-
-- [x] The full OS/Node test matrix is green in GitHub Actions.
-- [x] Local unit, Hook contract, privacy, retention, and marketplace release checks pass.
+- [x] Manifest, root package, plugin package, changelog, and release check use version `0.6.0`.
+- [x] The candidate manifest contains no local cachebuster suffix.
 - [x] No raw transcript, OTLP body, credential, review note, or local absolute path is tracked.
 - [x] OTel reports expose only allowlisted structure and numbers; raw `.bin` files remain explicitly
       documented as potentially sensitive.
-- [x] MIT license notices exist at repository and plugin-package level.
-- [x] Security reporting guidance is present.
+- [x] MIT license notices and security reporting guidance remain present.
 
-## Publishing boundary
-
-- [x] Commit history uses the selected GitHub noreply identity.
-- [x] The local release candidate is tagged `v0.5.0` at the reviewed commit.
-- [x] The public repository exists and contains the published `v0.4.0` release.
-- [x] The `v0.5.0` tag and GitHub Release are published from `main`.
-
-## Published v0.5.0 evidence
+## Published v0.5.0 evidence (historical)
 
 - The reviewed `v0.5.0` tag points to `bea3497e5022eb018ee63fa338cd7e7b3ec8ede6`.
 - The [tag matrix](https://github.com/KDB-Wind/codex-tps-plus/actions/runs/33458712669) and

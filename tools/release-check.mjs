@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const pluginRoot = path.join(root, "plugins", "codex-tps-plus");
-const expectedVersion = "0.5.0";
+const expectedVersion = "0.6.0";
 
 function json(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
@@ -50,7 +50,12 @@ assert.match(
 );
 assert.match(
   releaseChecklist,
-  new RegExp("tagged `v" + expectedVersion.replace(/\./g, "\\.") + "`")
+  new RegExp("local-only candidate `" + expectedVersion.replace(/\./g, "\\.") + "`")
+);
+assert.equal(
+  execFileSync("git", ["tag", "--list", `v${expectedVersion}`], { cwd: root, encoding: "utf8" }).trim(),
+  "",
+  `local-only candidate must not create v${expectedVersion}`
 );
 
 const stopGroups = hooks?.hooks?.Stop;

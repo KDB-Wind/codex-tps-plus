@@ -57,8 +57,10 @@ test("Stop metric uses output tokens once and wall time from task start", () => 
   assert.equal(metric.available, true);
   assert.equal(metric.outputTokens, 10);
   assert.equal(metric.reasoningTokens, 4);
+  assert.equal(metric.nonReasoningOutputTokens, 6);
   assert.equal(metric.durationMs, 2000);
-  assert.equal(metric.throughput, 5);
+  assert.equal(metric.throughput, 3);
+  assert.equal(metric.totalOutputThroughput, 5);
   assert.equal(metric.tokenCountEvents, 1);
 });
 
@@ -76,7 +78,7 @@ test("Stop-time transcript deliberately reports TTFT as not complete yet", () =>
   assert.equal(completion.reason, "turn_not_complete");
 });
 
-test("explicit null timing is missing rather than zero milliseconds", () => {
+test("completion duration remains usable when TTFT is missing", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-null-ttft-"));
   const transcript = path.join(temp, "rollout.jsonl");
   fs.writeFileSync(
@@ -94,8 +96,32 @@ test("explicit null timing is missing rather than zero milliseconds", () => {
     ].join("\n")
   );
   const completion = extractTurnCompletion(transcript, "turn-null");
-  assert.equal(completion.available, false);
-  assert.equal(completion.reason, "ttft_missing_or_invalid");
+  assert.equal(completion.available, true);
+  assert.equal(completion.ttftMs, null);
+  assert.equal(completion.completedDurationMs, 1000);
+  fs.rmSync(temp, { recursive: true, force: true });
+});
+
+test("invalid reasoning split disables non-reasoning throughput without losing total output", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-invalid-reasoning-"));
+  const transcript = path.join(temp, "rollout.jsonl");
+  fs.writeFileSync(
+    transcript,
+    `${[
+      { timestamp: "2026-08-30T12:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn-invalid", started_at: 1788091200 } },
+      { timestamp: "2026-08-30T12:00:01.000Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { output_tokens: 10, reasoning_output_tokens: 11 }, total_token_usage: { output_tokens: 10 } } } },
+    ].map(JSON.stringify).join("\n")}\n`,
+    "utf8"
+  );
+  const metric = extractStopMetric(transcript, "turn-invalid", {
+    nowMs: Date.parse("2026-08-30T12:00:02.000Z"),
+  });
+  assert.equal(metric.available, true);
+  assert.equal(metric.outputTokens, 10);
+  assert.equal(metric.reasoningTokens, null);
+  assert.equal(metric.nonReasoningOutputTokens, null);
+  assert.equal(metric.throughput, null);
+  assert.equal(metric.totalOutputThroughput, 5);
   fs.rmSync(temp, { recursive: true, force: true });
 });
 
@@ -114,12 +140,13 @@ test("re-emitted token_count usage is deduplicated by cumulative output", () => 
   });
   assert.equal(metric.outputTokens, 120);
   assert.equal(metric.reasoningTokens, 45);
+  assert.equal(metric.nonReasoningOutputTokens, 75);
   assert.equal(metric.tokenCountEvents, 2);
   assert.equal(metric.duplicateTokenCountEvents, 1);
   fs.rmSync(temp, { recursive: true, force: true });
 });
 
-test("request throughput includes TTFT, excludes tool execution, and weights request intervals", () => {
+test("request interval diagnostic uses non-reasoning output and weighted intervals", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-request-"));
   const transcript = path.join(temp, "rollout.jsonl");
   const records = [
@@ -136,24 +163,30 @@ test("request throughput includes TTFT, excludes tool execution, and weights req
   });
   assert.equal(metric.outputTokens, 200);
   assert.equal(metric.durationMs, 20_000);
-  assert.equal(metric.throughput, 10);
+  assert.equal(metric.throughput, 7);
+  assert.equal(metric.totalOutputThroughput, 10);
   assert.equal(metric.requestDurationMs, 4_000);
   assert.equal(metric.estimatedOutputTokens, 200);
+  assert.equal(metric.estimatedReasoningTokens, 60);
+  assert.equal(metric.estimatedNonReasoningOutputTokens, 140);
   assert.equal(metric.estimatedRequestCount, 2);
   assert.equal(metric.unestimatedRequestCount, 0);
-  assert.equal(metric.requestThroughput, 50);
+  assert.equal(metric.requestThroughput, 35);
+  assert.equal(metric.requestIntervalTotalOutputThroughput, 50);
   fs.rmSync(temp, { recursive: true, force: true });
 });
 
-test("session average is token-and-duration weighted, not an arithmetic mean", () => {
+test("non-reasoning session average is token-and-duration weighted", () => {
   const status = summarizeStatusRecords([
-    { outputTokens: 100, durationMs: 1000, estimatedOutputTokens: 100, estimatedRequestCount: 1, requestDurationMs: 1000, capturedAt: "2026-08-30T12:00:00.000Z" },
-    { outputTokens: 100, durationMs: 9000, estimatedOutputTokens: 100, estimatedRequestCount: 1, requestDurationMs: 9000, capturedAt: "2026-08-30T12:01:00.000Z" },
+    { outputTokens: 100, reasoningTokens: 50, durationMs: 1000, estimatedOutputTokens: 100, estimatedReasoningTokens: 50, estimatedRequestCount: 1, requestDurationMs: 1000, capturedAt: "2026-08-30T12:00:00.000Z" },
+    { outputTokens: 100, reasoningTokens: 50, durationMs: 9000, estimatedOutputTokens: 100, estimatedReasoningTokens: 50, estimatedRequestCount: 1, requestDurationMs: 9000, capturedAt: "2026-08-30T12:01:00.000Z" },
   ]);
-  assert.equal(status.latest.throughput, 100 / 9);
-  assert.equal(status.session.throughput, 20);
-  assert.equal(status.latest.requestThroughput, 100 / 9);
-  assert.equal(status.session.requestThroughput, 20);
+  assert.equal(status.latest.throughput, 50 / 9);
+  assert.equal(status.session.throughput, 10);
+  assert.equal(status.latest.totalOutputThroughput, 100 / 9);
+  assert.equal(status.session.totalOutputThroughput, 20);
+  assert.equal(status.latest.requestThroughput, 50 / 9);
+  assert.equal(status.session.requestThroughput, 10);
   assert.equal(status.requestThroughputIncludesTtft, true);
   assert.equal(status.isPureGenerationTps, false);
   assert.equal(status.latest.shortResponseReference, true);
@@ -161,10 +194,10 @@ test("session average is token-and-duration weighted, not an arithmetic mean", (
 
 test("short-response reference marker stops at 128 output tokens per request", () => {
   const below = summarizeStatusRecords([
-    { outputTokens: 127, durationMs: 1000, estimatedOutputTokens: 127, estimatedRequestCount: 1, requestDurationMs: 1000, capturedAt: "2026-08-30T12:00:00.000Z" },
+    { outputTokens: 127, reasoningTokens: 0, durationMs: 1000, estimatedOutputTokens: 127, estimatedReasoningTokens: 0, estimatedRequestCount: 1, requestDurationMs: 1000, capturedAt: "2026-08-30T12:00:00.000Z" },
   ]);
   const boundary = summarizeStatusRecords([
-    { outputTokens: 128, durationMs: 1000, estimatedOutputTokens: 128, estimatedRequestCount: 1, requestDurationMs: 1000, capturedAt: "2026-08-30T12:00:00.000Z" },
+    { outputTokens: 128, reasoningTokens: 0, durationMs: 1000, estimatedOutputTokens: 128, estimatedReasoningTokens: 0, estimatedRequestCount: 1, requestDurationMs: 1000, capturedAt: "2026-08-30T12:00:00.000Z" },
   ]);
   assert.equal(below.latest.shortResponseReference, true);
   assert.equal(boundary.latest.shortResponseReference, false);
@@ -175,15 +208,18 @@ test("v2 request-duration records remain readable without reviving the TPS label
     { outputTokens: 200, durationMs: 5000, estimatedOutputTokens: 200, estimatedRequestCount: 1, inferenceDurationMs: 4000, capturedAt: "2026-08-30T12:00:00.000Z" },
   ]);
   assert.equal(status.latest.requestDurationMs, 4000);
-  assert.equal(status.latest.requestThroughput, 50);
+  assert.equal(status.latest.requestThroughput, null);
+  assert.equal(status.latest.totalOutputThroughput, 40);
+  assert.equal(status.metric, "total_output_end_to_end_throughput");
   assert.equal(status.latest.approximateTps, undefined);
   assert.doesNotMatch(formatStatusLine(status), /TPS|近似/);
 });
 
-test("incomplete request coverage falls back to whole-turn throughput", () => {
+test("incomplete request coverage hides only the heuristic request diagnostic", () => {
   const status = summarizeStatusRecords([
     {
       outputTokens: 200,
+      reasoningTokens: 50,
       durationMs: 5000,
       estimatedOutputTokens: 100,
       estimatedRequestCount: 1,
@@ -192,12 +228,45 @@ test("incomplete request coverage falls back to whole-turn throughput", () => {
       capturedAt: "2026-08-30T12:00:00.000Z",
     },
   ]);
-  assert.equal(status.metric, "end_to_end_turn_throughput");
+  assert.equal(status.metric, "non_reasoning_output_end_to_end_throughput");
   assert.equal(status.requestThroughputIncludesTtft, false);
   assert.equal(status.latest.requestCoverageComplete, false);
   assert.equal(status.latest.requestThroughput, null);
   assert.equal(status.session.requestThroughput, null);
-  assert.equal(formatStatusLine(status), "⚡ 整轮吞吐 40.0 tok/s · 会话吞吐 40.0 tok/s · 输出 200 tok · 耗时 5.0s");
+  assert.equal(formatStatusLine(status), "⚡ 非推理输出吞吐 30.0 tok/s · 会话 30.0 tok/s · 非推理 150 tok · 推理 50 tok · 总输出 200 tok · 轮耗时 5.0s");
+});
+
+test("session non-reasoning average excludes records with a missing split", () => {
+  const status = summarizeStatusRecords([
+    {
+      outputTokens: 100,
+      durationMs: 1000,
+      capturedAt: "2026-08-30T12:00:00.000Z",
+    },
+    {
+      outputTokens: 200,
+      reasoningTokens: 80,
+      durationMs: 2000,
+      capturedAt: "2026-08-30T12:01:00.000Z",
+    },
+  ]);
+  assert.equal(status.metric, "non_reasoning_output_end_to_end_throughput");
+  assert.equal(status.session.measuredTurns, 1);
+  assert.equal(status.session.reasoningMeasuredTurns, 1);
+  assert.equal(status.session.nonReasoningThroughput, 60);
+  assert.equal(status.session.totalOutputThroughput, 100);
+});
+
+test("missing reasoning split is labeled as total-output fallback", () => {
+  const status = summarizeStatusRecords([
+    { outputTokens: 100, durationMs: 2000, capturedAt: "2026-08-30T12:00:00.000Z" },
+  ]);
+  assert.equal(status.latest.reasoningBreakdownAvailable, false);
+  assert.equal(status.latest.nonReasoningThroughput, null);
+  assert.equal(
+    formatStatusLine(status),
+    "⚡ 总输出整轮吞吐 50.0 tok/s · 会话总输出 50.0 tok/s · 总输出 100 tok · 推理拆分缺失 · 轮耗时 2.0s"
+  );
 });
 
 test("session records are redacted, deduplicated by turn, and queryable", () => {
@@ -245,7 +314,7 @@ test("delayed TTFT backfill updates the same redacted turn and session mean", ()
     source: "stop-wall-clock",
     outputTokens: 100,
     reasoningTokens: 40,
-    durationMs: 3000,
+    durationMs: 2800,
     tokenCountEvents: 1,
     toolCallCount: 0,
   };
@@ -270,6 +339,11 @@ test("delayed TTFT backfill updates the same redacted turn and session mean", ()
   assert.equal(status.latest.ttftMs, 900);
   assert.equal(status.latest.timingSource, "task_complete_direct");
   assert.equal(status.latest.completedDurationMs, 3000);
+  assert.equal(status.latest.durationMs, 3000);
+  assert.equal(status.latest.stopDurationMs, 2800);
+  assert.equal(status.latest.durationSource, "task_complete");
+  assert.equal(status.latest.durationFinal, true);
+  assert.equal(status.latest.nonReasoningThroughput, 20);
   assert.equal(status.session.ttftMeasuredTurns, 1);
   assert.equal(status.session.ttftMeanMs, 900);
   assert.equal(status.mostRecentTtft.isLatestTurn, true);
@@ -281,6 +355,73 @@ test("delayed TTFT backfill updates the same redacted turn and session mean", ()
     .join("\n");
   assert.equal(serialized.includes("session-secret"), false);
   assert.equal(serialized.includes("turn-legacy-1"), false);
+  fs.rmSync(temp, { recursive: true, force: true });
+});
+
+test("duration-only completion backfill replaces the provisional denominator", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-duration-only-"));
+  const transcript = path.join(temp, "rollout.jsonl");
+  fs.writeFileSync(
+    transcript,
+    `${[
+      { timestamp: "2026-08-30T12:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn-duration-only" } },
+      { timestamp: "2026-08-30T12:00:04.000Z", type: "event_msg", payload: { type: "task_complete", turn_id: "turn-duration-only", duration_ms: 4000, time_to_first_token_ms: null } },
+    ].map(JSON.stringify).join("\n")}\n`,
+    "utf8"
+  );
+  recordStopMetric({
+    dataDir: temp,
+    sessionId: "session-duration-only",
+    turnId: "turn-duration-only",
+    metric: {
+      available: true,
+      source: "stop-wall-clock",
+      outputTokens: 100,
+      reasoningTokens: 40,
+      nonReasoningOutputTokens: 60,
+      durationMs: 3500,
+      tokenCountEvents: 1,
+      toolCallCount: 0,
+    },
+  });
+  const completion = extractTurnCompletion(transcript, "turn-duration-only");
+  const result = backfillTurnCompletion({
+    dataDir: temp,
+    sessionId: "session-duration-only",
+    turnId: "turn-duration-only",
+    completion,
+  });
+  assert.equal(result.updated, true);
+  const status = readSessionStatus({ dataDir: temp, sessionId: "session-duration-only" });
+  assert.equal(status.latest.ttftMs, null);
+  assert.equal(status.latest.stopDurationMs, 3500);
+  assert.equal(status.latest.durationMs, 4000);
+  assert.equal(status.latest.durationSource, "task_complete");
+  assert.equal(status.latest.nonReasoningThroughput, 15);
+  fs.rmSync(temp, { recursive: true, force: true });
+});
+
+test("invalid TTFT does not discard a valid completion duration", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-invalid-ttft-"));
+  const transcript = path.join(temp, "rollout.jsonl");
+  fs.writeFileSync(
+    transcript,
+    `${JSON.stringify({
+      timestamp: "2026-08-30T12:00:04.000Z",
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn-invalid-ttft",
+        duration_ms: 4000,
+        time_to_first_token_ms: 5000,
+      },
+    })}\n`,
+    "utf8"
+  );
+  const completion = extractTurnCompletion(transcript, "turn-invalid-ttft");
+  assert.equal(completion.available, true);
+  assert.equal(completion.ttftMs, null);
+  assert.equal(completion.completedDurationMs, 4000);
   fs.rmSync(temp, { recursive: true, force: true });
 });
 
@@ -325,6 +466,7 @@ test("a new synchronous Stop line labels the last completed timing as previous-t
     {
       turnId: "previous",
       outputTokens: 100,
+      reasoningTokens: 40,
       durationMs: 2000,
       ttftMs: 800,
       completedDurationMs: 1900,
@@ -333,6 +475,7 @@ test("a new synchronous Stop line labels the last completed timing as previous-t
     {
       turnId: "current",
       outputTokens: 200,
+      reasoningTokens: 80,
       durationMs: 4000,
       capturedAt: "2026-08-30T12:01:00.000Z",
     },
@@ -514,7 +657,7 @@ test("an isolated OTel window remains an unattributed short-output candidate", (
   );
 });
 
-test("Stop capture labels request-interval throughput as including TTFT", () => {
+test("Stop capture makes non-reasoning end-to-end throughput the primary line", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-capture-"));
   const result = captureStopStatus(
     {
@@ -524,15 +667,16 @@ test("Stop capture labels request-interval throughput as including TTFT", () => 
     },
     { dataDir: temp, nowMs: Date.parse("2026-08-30T12:00:03.000Z") }
   );
-  assert.equal(result.status.session.throughput, 5);
-  assert.equal(result.line, "⚡ 请求内吞吐 10.0 tok/s（含首字·短回复参考） · 会话请求内 10.0 tok/s · 整轮 5.0 tok/s · 输出 10 tok · 轮耗时 2.0s");
+  assert.equal(result.status.session.throughput, 3);
+  assert.equal(result.status.latest.requestThroughput, 6);
+  assert.equal(result.line, "⚡ 非推理输出吞吐 3.0 tok/s · 会话 3.0 tok/s · 非推理 6 tok · 推理 4 tok · 总输出 10 tok · 轮耗时 2.0s");
   assert.equal(result.status.isPureGenerationTps, false);
   assert.equal(result.status.requestThroughputIncludesTtft, true);
-  assert.equal(formatStatusLine(result.status, "上轮整轮吞吐").startsWith("⚡ 请求内吞吐 10.0"), true);
+  assert.equal(formatStatusLine(result.status).startsWith("⚡ 非推理输出吞吐 3.0"), true);
   fs.rmSync(temp, { recursive: true, force: true });
 });
 
-test("collector surfaces request throughput as strict Stop JSON", () => {
+test("collector surfaces non-reasoning end-to-end throughput as strict Stop JSON", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-hook-status-"));
   const collector = path.join(root, "hooks", "collector.mjs");
   const transcript = path.join(temp, "rollout.jsonl");
@@ -559,9 +703,9 @@ test("collector surfaces request throughput as strict Stop JSON", () => {
     encoding: "utf8",
   });
   const output = JSON.parse(stdout);
-  assert.match(output.systemMessage, /^⚡ 请求内吞吐 /);
-  assert.match(output.systemMessage, /含首字/);
-  assert.match(output.systemMessage, /· 整轮 /);
+  assert.match(output.systemMessage, /^⚡ 非推理输出吞吐 /);
+  assert.match(output.systemMessage, /· 推理 4 tok /);
+  assert.doesNotMatch(output.systemMessage, /请求内吞吐/);
   fs.rmSync(temp, { recursive: true, force: true });
 });
 

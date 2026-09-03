@@ -36,5 +36,5 @@ if (otelCapture) {
 if (process.argv.includes("--json")) {
   process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
 } else {
-  process.stdout.write(`${formatStatusLine(status, "上轮整轮吞吐") || "暂无本会话吞吐数据；完成一轮对话后再试。"}\n`);
+  process.stdout.write(`${formatStatusLine(status) || "暂无本会话吞吐数据；完成一轮对话后再试。"}\n`);
 }

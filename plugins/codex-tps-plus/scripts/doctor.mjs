@@ -118,11 +118,11 @@ results.push(
     "Hook configuration",
     releaseHookConfig,
     releaseHookConfig
-      ? "Stop: synchronous display + asynchronous TTFT backfill"
+      ? "Stop: synchronous display + asynchronous completion timing backfill"
       : hookNames.join(", ") || "missing",
     releaseHookConfig
       ? null
-      : "The release plugin should register only Stop with the sync collector and async TTFT backfill."
+      : "The release plugin should register only Stop with the sync collector and async completion timing backfill."
   )
 );
 

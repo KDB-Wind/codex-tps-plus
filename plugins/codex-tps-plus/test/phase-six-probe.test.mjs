@@ -522,8 +522,11 @@ test("E2 reference uses capturedAt as the duration anchor and stays independent"
     metric: {
       outputTokens: 15,
       reasoningTokens: 6,
+      nonReasoningOutputTokens: 9,
       requestDurationMs: 2_000,
       estimatedOutputTokens: 15,
+      estimatedReasoningTokens: 6,
+      estimatedNonReasoningOutputTokens: 9,
       estimatedRequestCount: 2,
       unestimatedRequestCount: 0,
       tokenCountEvents: 2,
@@ -536,8 +539,11 @@ test("E2 reference uses capturedAt as the duration anchor and stays independent"
   assert.deepEqual(reference.staticFields, actual.metric && {
     outputTokens: 15,
     reasoningTokens: 6,
+    nonReasoningOutputTokens: 9,
     requestDurationMs: 2_000,
     estimatedOutputTokens: 15,
+    estimatedReasoningTokens: 6,
+    estimatedNonReasoningOutputTokens: 9,
     estimatedRequestCount: 2,
     unestimatedRequestCount: 0,
     tokenCountEvents: 2,
@@ -552,7 +558,10 @@ test("E2 reference uses capturedAt as the duration anchor and stays independent"
   assert.equal(boundary.available, true);
   assert.equal(boundary.staticFields.outputTokens, 7);
   assert.equal(boundary.staticFields.reasoningTokens, null);
+  assert.equal(boundary.staticFields.nonReasoningOutputTokens, null);
   assert.equal(boundary.staticFields.requestDurationMs, null);
+  assert.equal(boundary.staticFields.estimatedReasoningTokens, 0);
+  assert.equal(boundary.staticFields.estimatedNonReasoningOutputTokens, 0);
   assert.equal(boundary.staticFields.estimatedRequestCount, 0);
   assert.equal(boundary.staticFields.unestimatedRequestCount, 1);
   assert.equal(boundary.staticFields.tokenCountEvents, 1);

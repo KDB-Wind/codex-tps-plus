@@ -13,8 +13,13 @@ import {
 } from "../scripts/probe-core.mjs";
 import {
   classifyTpsEvidence,
+  endToEndMs,
+  endToEndRate,
+  nonReasoningOutputTokensForRate,
   outputTokensForRate,
+  pureGenerationMs,
   requestRate,
+  weightedEndToEndRate,
   weightedRate,
 } from "../scripts/metric-model.mjs";
 import {
@@ -109,6 +114,37 @@ test("rate model uses output_tokens once and weighted duration", () => {
   );
 });
 
+test("end-to-end model subtracts reasoning and prefers completed duration", () => {
+  assert.equal(
+    nonReasoningOutputTokensForRate({ output_tokens: 593, reasoning_output_tokens: 450 }),
+    143
+  );
+  assert.equal(nonReasoningOutputTokensForRate({ output_tokens: 10 }), null);
+  assert.equal(
+    nonReasoningOutputTokensForRate({ output_tokens: 10, reasoning_output_tokens: 11 }),
+    null
+  );
+  assert.equal(
+    endToEndRate({
+      output_tokens: 100,
+      reasoning_output_tokens: 40,
+      duration_ms: 1000,
+      completedDurationMs: 2000,
+    }),
+    30
+  );
+  assert.equal(endToEndMs({ started_at: 10, completed_at: 12 }), 2000);
+  assert.equal(pureGenerationMs({ first_token_at: 10.5, completed_at: 12 }), 1500);
+  assert.equal(
+    weightedEndToEndRate([
+      { output_tokens: 100, reasoning_output_tokens: 50, duration_ms: 1000 },
+      { output_tokens: 100, reasoning_output_tokens: 50, duration_ms: 9000 },
+      { output_tokens: 100, duration_ms: 1000 },
+    ]),
+    10
+  );
+});
+
 test("collector emits strict JSON and writes a redacted observation", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-test-"));
   const collector = path.join(root, "hooks", "collector.mjs");
@@ -189,7 +225,7 @@ test("observation retention caps managed files without touching unrelated files"
   fs.rmSync(temp, { recursive: true, force: true });
 });
 
-test("release configuration registers one Stop event with sync display and async TTFT backfill", () => {
+test("release configuration registers one Stop event with sync display and async timing backfill", () => {
   const hooks = JSON.parse(fs.readFileSync(path.join(root, "hooks", "hooks.json"), "utf8")).hooks;
   assert.deepEqual(Object.keys(hooks), ["Stop"]);
   assert.equal(hooks.Stop[0].hooks.length, 2);

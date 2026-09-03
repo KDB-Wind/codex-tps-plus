@@ -1,9 +1,9 @@
 {
   "name": "codex-tps-plus",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
-  "description": "Codex CLI delayed TTFT plus request and end-to-end throughput display.",
+  "description": "Codex CLI non-reasoning end-to-end throughput and delayed TTFT display.",
   "license": "MIT",
   "engines": {
     "node": ">=22.5.0"

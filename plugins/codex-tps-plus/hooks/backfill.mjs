@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // Background Stop hook. Codex writes task_complete after synchronous Stop
-// hooks, so this process waits briefly and backfills only redacted numeric
-// timing fields into the already-created turn status record.
+// hooks, so this process waits briefly and backfills independently validated,
+// redacted completion-duration and TTFT fields into the turn status record.
 
 import {
   backfillTurnCompletion,

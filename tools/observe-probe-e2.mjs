@@ -3,8 +3,11 @@ import fs from "node:fs";
 export const E2_STATIC_FIELDS = Object.freeze([
   "outputTokens",
   "reasoningTokens",
+  "nonReasoningOutputTokens",
   "requestDurationMs",
   "estimatedOutputTokens",
+  "estimatedReasoningTokens",
+  "estimatedNonReasoningOutputTokens",
   "estimatedRequestCount",
   "unestimatedRequestCount",
   "tokenCountEvents",
@@ -50,7 +53,9 @@ function usageFrom(payload) {
   const totalOutputTokens = numberOrNull(payload?.info?.total_token_usage?.output_tokens);
   return {
     outputTokens,
-    reasoningTokens: reasoningRaw !== null && reasoningRaw >= 0 ? reasoningRaw : null,
+    reasoningTokens: reasoningRaw !== null && reasoningRaw >= 0 && reasoningRaw <= outputTokens
+      ? reasoningRaw
+      : null,
     totalOutputTokens: totalOutputTokens !== null && totalOutputTokens >= 0 ? totalOutputTokens : null,
   };
 }
@@ -88,8 +93,11 @@ function emptyReference(parseErrorCount = 0) {
     staticFields: {
       outputTokens: 0,
       reasoningTokens: 0,
+      nonReasoningOutputTokens: 0,
       requestDurationMs: null,
       estimatedOutputTokens: 0,
+      estimatedReasoningTokens: 0,
+      estimatedNonReasoningOutputTokens: 0,
       estimatedRequestCount: 0,
       unestimatedRequestCount: 0,
       tokenCountEvents: 0,
@@ -100,7 +108,7 @@ function emptyReference(parseErrorCount = 0) {
 }
 
 /**
- * Recomputes the v0.5 transcript fields for E2 from a small immutable input.
+ * Recomputes the current transcript fields for E2 from a small immutable input.
  * This parser intentionally has no dependency on the production status code.
  */
 export function computeE2Reference(source, turnId, options = {}) {
@@ -115,6 +123,8 @@ export function computeE2Reference(source, turnId, options = {}) {
   let reasoningKnown = true;
   let requestDurationMs = 0;
   let estimatedOutputTokens = 0;
+  let estimatedReasoningTokens = 0;
+  let estimatedReasoningKnown = true;
   let estimatedRequestCount = 0;
   let unestimatedRequestCount = 0;
   let tokenCountEvents = 0;
@@ -142,6 +152,8 @@ export function computeE2Reference(source, turnId, options = {}) {
         reasoningKnown = true;
         requestDurationMs = 0;
         estimatedOutputTokens = 0;
+        estimatedReasoningTokens = 0;
+        estimatedReasoningKnown = true;
         estimatedRequestCount = 0;
         unestimatedRequestCount = 0;
         tokenCountEvents = 0;
@@ -202,6 +214,8 @@ export function computeE2Reference(source, turnId, options = {}) {
       if (intervalMs <= maxDurationMs) {
         requestDurationMs += intervalMs;
         estimatedOutputTokens += usage.outputTokens;
+        if (usage.reasoningTokens === null) estimatedReasoningKnown = false;
+        else estimatedReasoningTokens += usage.reasoningTokens;
         estimatedRequestCount += 1;
       } else {
         unestimatedRequestCount += 1;
@@ -232,8 +246,13 @@ export function computeE2Reference(source, turnId, options = {}) {
     staticFields: {
       outputTokens,
       reasoningTokens: reasoningKnown ? reasoningTokens : null,
+      nonReasoningOutputTokens: reasoningKnown ? outputTokens - reasoningTokens : null,
       requestDurationMs: requestDurationMs || null,
       estimatedOutputTokens,
+      estimatedReasoningTokens: estimatedReasoningKnown ? estimatedReasoningTokens : null,
+      estimatedNonReasoningOutputTokens: estimatedReasoningKnown
+        ? estimatedOutputTokens - estimatedReasoningTokens
+        : null,
       estimatedRequestCount,
       unestimatedRequestCount,
       tokenCountEvents,
