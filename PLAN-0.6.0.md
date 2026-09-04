@@ -31,7 +31,8 @@ Stop 墙钟与 `task_complete.duration_ms` 的记录中，后者比前者中位�
 4. `endToEndDurationMs` 优先使用有效的 `task_complete.duration_ms`；当前同步 Stop 尚未出现
    completion 时，暂用 `Stop capturedAt - task_started timestamp`。JSON 必须暴露来源。
 5. 会话值按 token 与时长加权，只聚合 reasoning 拆分完整的轮次；不得把总 output 口径和
-   非推理 output 口径混在同一平均值里。
+   非推理 output 口径混在同一平均值里。拆分完整但非推理 output 为 0 的轮次是有效零速率
+   样本，其端到端时长必须进入会话分母。
 6. reasoning 拆分缺失或越界时，降级显示明确命名的“总输出整轮吞吐”，并标注拆分缺失。
 7. transcript 推断的请求区间保留在 JSON 作兼容诊断，改用非推理 output 作为分子；不再
    出现在默认状态行，也不得称为精确请求速率或 TPS。

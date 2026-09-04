@@ -457,14 +457,14 @@ export function extractStopMetric(transcriptPath, currentTurnId, options = {}) {
     nonReasoningOutputTokens,
     durationMs,
     throughput:
-      nonReasoningOutputTokens !== null && nonReasoningOutputTokens > 0
+      nonReasoningOutputTokens !== null
         ? nonReasoningOutputTokens / (durationMs / 1000)
         : null,
     totalOutputThroughput: scanned.outputTokens / (durationMs / 1000),
     requestThroughput:
       scanned.requestDurationMs > 0 &&
       estimatedNonReasoningOutputTokens !== null &&
-      estimatedNonReasoningOutputTokens > 0
+      scanned.estimatedRequestCount > 0
         ? estimatedNonReasoningOutputTokens / (scanned.requestDurationMs / 1000)
         : null,
     requestIntervalTotalOutputThroughput:
@@ -572,8 +572,10 @@ function estimatedNonReasoningOutputForRecord(record) {
 }
 
 function hasCompleteRequestMeasurement(record) {
+  const estimatedNonReasoningOutputTokens = estimatedNonReasoningOutputForRecord(record);
   return (
-    estimatedNonReasoningOutputForRecord(record) > 0 &&
+    estimatedNonReasoningOutputTokens !== null &&
+    finiteNumber(record?.estimatedOutputTokens) > 0 &&
     finiteNumber(record?.estimatedRequestCount) > 0 &&
     validDurationMs(record?.requestDurationMs ?? record?.inferenceDurationMs) !== null &&
     (finiteNumber(record?.unestimatedRequestCount) ?? 0) === 0
@@ -652,9 +654,10 @@ export function summarizeStatusRecords(records) {
   const latest = valid.at(-1) || null;
   const latestNonReasoningOutputTokens = nonReasoningOutputForRecord(latest);
   const latestReasoningBreakdownAvailable = latestNonReasoningOutputTokens !== null;
-  const latestUsesNonReasoning =
-    latestReasoningBreakdownAvailable && latestNonReasoningOutputTokens > 0;
-  const nonReasoningMeasured = valid.filter((record) => nonReasoningOutputForRecord(record) > 0);
+  const latestUsesNonReasoning = latestReasoningBreakdownAvailable;
+  const nonReasoningMeasured = valid.filter(
+    (record) => nonReasoningOutputForRecord(record) !== null
+  );
   const totalOutputTokens = valid.reduce((total, record) => total + record.outputTokens, 0);
   const totalDurationMs = valid.reduce(
     (total, record) => total + endToEndDurationForRecord(record),
@@ -717,7 +720,7 @@ export function summarizeStatusRecords(records) {
       ? totalOutputTokens / (totalDurationMs / 1000)
       : null;
   const sessionNonReasoningThroughput =
-    nonReasoningOutputTokens > 0 && nonReasoningDurationMs > 0
+    nonReasoningDurationMs > 0
       ? nonReasoningOutputTokens / (nonReasoningDurationMs / 1000)
       : null;
   return {
@@ -726,6 +729,8 @@ export function summarizeStatusRecords(records) {
       ? "non_reasoning_output_end_to_end_throughput"
       : "total_output_end_to_end_throughput",
     isPureGenerationTps: false,
+    requestCoverageCompleteForThroughput: latestRequestCoverageComplete,
+    // Compatibility alias: an available inferred interval includes TTFT by construction.
     requestThroughputIncludesTtft: latestRequestCoverageComplete,
     requestThroughputMethod: latestRequestCoverageComplete
       ? "transcript-heuristic-request-intervals-including-ttft"
@@ -796,7 +801,7 @@ export function summarizeStatusRecords(records) {
           nonReasoningThroughput: sessionNonReasoningThroughput,
           totalOutputThroughput: sessionTotalOutputThroughput,
           requestThroughput:
-            requestOutputTokens > 0 && requestDurationMs > 0
+            requestMeasured.length > 0 && requestDurationMs > 0
               ? requestOutputTokens / (requestDurationMs / 1000)
               : null,
           requestOutputTokens,
@@ -1018,8 +1023,8 @@ export function formatStatusLine(status) {
     : "";
   if (
     status.latest.reasoningBreakdownAvailable &&
-    status.latest.nonReasoningThroughput &&
-    status.session.nonReasoningThroughput
+    status.latest.nonReasoningThroughput !== null &&
+    status.session.nonReasoningThroughput !== null
   ) {
     return `⚡ 非推理输出吞吐 ${status.latest.nonReasoningThroughput.toFixed(1)} tok/s · 会话 ${status.session.nonReasoningThroughput.toFixed(1)} tok/s · 非推理 ${compactNumber(status.latest.nonReasoningOutputTokens)} tok · 推理 ${compactNumber(status.latest.reasoningTokens)} tok · 总输出 ${compactNumber(status.latest.outputTokens)} tok · 轮耗时 ${compactDuration(status.latest.durationMs)}${ttftSuffix}${nativeOtelSuffix}`;
   }

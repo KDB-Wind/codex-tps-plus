@@ -30,7 +30,8 @@ TTFT 的本地插件。显式启用的 localhost OTel 实验还可读取 Codex �
 `0 <= reasoning_output_tokens <= output_tokens` 再做一次减法。这里的“非推理”仍可能包含
 模型生成的工具调用参数，不能等同于只对最终可见正文做 tokenizer 计数。拆分缺失或越界时，
 插件不会猜测，而会明确降级为“总输出整轮吞吐”。所有吞吐平均值都按 token 与时长加权；
-TTFT 均值是有有效回填值轮次的算术平均，缺失值不按零参与。
+拆分完整但非推理 output 为 0 的轮次按有效零速率样本参与会话分母。TTFT 均值是有有效回填
+值轮次的算术平均，缺失值不按零参与。
 
 ## 工作机制
 
@@ -220,6 +221,8 @@ reasoning 拆分缺失时降级：
 output”，而不是服务端纯解码速度。不同提示、推理强度、缓存、工具耗时、服务负载和回复
 长度都会改变结果，不能用单个短回复比较模型档位。JSON 中的请求区间值只是 transcript
 启发式诊断；即使覆盖完整，也不代表上游提供了精确逐请求 timing。
+顶层 `requestCoverageCompleteForThroughput` 表示该诊断是否覆盖完整；旧字段
+`requestThroughputIncludesTtft` 仅作为兼容别名保留，不是对“本轮是否含 TTFT”的探测结果。
 
 如果当前最新状态已经由后台补全，`$tps` 会把同一个值标成 `TTFT`，而不是“上轮 TTFT”。
 若后台超时、会话立即关闭或 transcript 格式变化，TTFT 会保持缺失，不会显示为零。

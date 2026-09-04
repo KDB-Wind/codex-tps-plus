@@ -125,6 +125,50 @@ test("invalid reasoning split disables non-reasoning throughput without losing t
   fs.rmSync(temp, { recursive: true, force: true });
 });
 
+test("an all-reasoning turn is a valid zero-rate measurement and keeps its session duration", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-all-reasoning-"));
+  const transcript = path.join(temp, "rollout.jsonl");
+  fs.writeFileSync(
+    transcript,
+    `${[
+      { timestamp: "2026-08-30T12:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn-all-reasoning", started_at: 1788091200 } },
+      { timestamp: "2026-08-30T12:00:01.000Z", type: "response_item", payload: { type: "reasoning" } },
+      { timestamp: "2026-08-30T12:00:01.001Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { output_tokens: 100, reasoning_output_tokens: 100 }, total_token_usage: { output_tokens: 100 } } } },
+    ].map(JSON.stringify).join("\n")}\n`,
+    "utf8"
+  );
+  const metric = extractStopMetric(transcript, "turn-all-reasoning", {
+    nowMs: Date.parse("2026-08-30T12:00:02.000Z"),
+  });
+  assert.equal(metric.available, true);
+  assert.equal(metric.nonReasoningOutputTokens, 0);
+  assert.equal(metric.throughput, 0);
+  assert.equal(metric.requestThroughput, 0);
+
+  const zeroStatus = summarizeStatusRecords([
+    { ...metric, capturedAt: "2026-08-30T12:00:02.000Z" },
+  ]);
+  assert.equal(zeroStatus.metric, "non_reasoning_output_end_to_end_throughput");
+  assert.equal(zeroStatus.requestCoverageCompleteForThroughput, true);
+  assert.equal(zeroStatus.latest.nonReasoningThroughput, 0);
+  assert.equal(zeroStatus.session.nonReasoningThroughput, 0);
+  assert.equal(zeroStatus.session.requestThroughput, 0);
+  assert.equal(
+    formatStatusLine(zeroStatus),
+    "⚡ 非推理输出吞吐 0.0 tok/s · 会话 0.0 tok/s · 非推理 0 tok · 推理 100 tok · 总输出 100 tok · 轮耗时 2.0s"
+  );
+
+  const mixedStatus = summarizeStatusRecords([
+    { outputTokens: 100, reasoningTokens: 100, durationMs: 1000 },
+    { outputTokens: 200, reasoningTokens: 80, durationMs: 2000 },
+  ]);
+  assert.equal(mixedStatus.session.reasoningMeasuredTurns, 2);
+  assert.equal(mixedStatus.session.nonReasoningOutputTokens, 120);
+  assert.equal(mixedStatus.session.nonReasoningDurationMs, 3000);
+  assert.equal(mixedStatus.session.nonReasoningThroughput, 40);
+  fs.rmSync(temp, { recursive: true, force: true });
+});
+
 test("re-emitted token_count usage is deduplicated by cumulative output", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-duplicate-"));
   const transcript = path.join(temp, "rollout.jsonl");

@@ -4,6 +4,8 @@
 
 - Make non-reasoning output divided by end-to-end turn duration the primary automatic and session
   throughput, while keeping total output and reasoning counts explicit.
+- Treat a complete all-reasoning turn as a valid zero non-reasoning rate whose duration remains in
+  the weighted session denominator.
 - Prefer backfilled `task_complete.duration_ms` over the provisional synchronous Stop wall clock.
 - Backfill completion duration independently from TTFT so either valid timing can survive when the
   other is missing or invalid.
