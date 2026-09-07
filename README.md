@@ -79,8 +79,9 @@ Stop 墙钟，且不会包含自己的 TTFT。后台回填后，`$tps` 会改用
 - Node.js `>= 22.5.0`，且 `node` 可从 Hook 进程的 `PATH` 找到。
 - 插件必须来自已配置的 Codex marketplace。
 - Hook 生命周期与延迟 completion 时序已在 Windows、Codex CLI `0.149.1` 的交互式 TUI
-  实测；0.6.0 候选在 Windows、Codex CLI `0.153.0` 完成自动化与 doctor 验证。Hook 同时
-  提供 POSIX 命令格式，但 macOS/Linux 和 0.6.0 新显示仍需在未来远端发布前补做实机回归。
+  实测；0.6.0 已在 Windows、Codex CLI `0.153.4` 完成安装、doctor 与新会话显示验证，
+  并通过 Windows/macOS/Linux × Node.js 22/24 的自动化测试及实际 CLI 安装/升级冒烟。
+  macOS/Linux 的验证使用合成输入调用已安装的 Hook；尚未独立验证这些平台的交互式 TUI。
 - 历史实验中 `codex exec` 没有运行项目 Hook，因此当前支持承诺以交互式会话为准。
 
 ## 安装

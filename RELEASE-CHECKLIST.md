@@ -1,12 +1,11 @@
 # Release checklist
 
-## 0.6.0 candidate boundary
+## 0.6.0 release approval — 2026-09-08
 
-- [x] The repository, plugin package, and plugin manifest identify the candidate `0.6.0`.
+- [x] The repository, plugin package, and plugin manifest identify version `0.6.0`.
 - [x] The accuracy contract is frozen in `PLAN-0.6.0.md`.
 - [x] Local unit, Hook contract, privacy, retention, doctor, and marketplace release checks pass.
-- [x] No `v0.6.0` tag is created.
-- [x] Candidate branch CI is allowed; main, release tags, and GitHub Releases remain unchanged during trial.
+- [x] The user authorized promotion to main, the release tag, and GitHub Release after the local trial.
 - [x] Automated installation smoke uses a disposable CODEX_HOME, real Codex CLI 0.153.4, and synthetic Hook inputs.
 - [x] Local Windows install, 0.5.0 upgrade, completion backfill, repeated Stop, and removed-cache recovery pass.
 - [x] Candidate `cb294b6` passes the Windows/macOS/Linux matrix on Node.js 22 and 24
@@ -14,7 +13,9 @@
       rerun this gate for any later code changes.
 - [x] The fixed production files are installed locally with a distinct cachebuster, content checked,
       and the stable runtime is activated; doctor reports zero failed checks.
-- [ ] Interactive new-session/resumed-session trial passes before promotion to main.
+- [x] The user supplied a real new-session Hook line with non-reasoning throughput and the corrected TTFT label.
+- Resumed-session recovery is covered by automated removed-cache smoke; a separate interactive resumed-session
+  trial and macOS/Linux TUI trial have not been independently recorded. These evidence limits remain explicit.
 
 ## Check modes and promotion
 

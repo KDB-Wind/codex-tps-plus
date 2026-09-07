@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0 - 2026-09-04
+## 0.6.0 - 2026-09-08
 
 - Fail closed when nonzero usage lacks cumulative deduplication evidence instead of merging
   independent requests with equal token counts.
@@ -26,8 +26,8 @@
   replacement, mixed session samples, stable runtime, and strict Hook output.
 - Correct second-based timestamp fallbacks in the probe metric model and forward root doctor CLI
   arguments so `npm run doctor -- --json` reaches the doctor's JSON mode as documented.
-- Prepare this version as a trial candidate; candidate branches may run remote CI, while main,
-  release tags, and GitHub Releases remain unchanged until promotion.
+- Validate all six Windows/macOS/Linux and Node.js 22/24 combinations, including real CLI
+  installation and upgrade smoke, before promotion from the trial candidate.
 
 ## 0.5.0 - 2026-09-01
 
