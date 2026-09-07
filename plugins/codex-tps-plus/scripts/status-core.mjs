@@ -87,7 +87,7 @@ function scanCurrentTurn(text, currentTurnId) {
   let estimatedRequestCount = 0;
   let unestimatedRequestCount = 0;
   const seenCumulativeOutput = new Set();
-  const seenFallbackUsage = new Set();
+  let usageDeduplicationUnavailable = false;
 
   for (const raw of text.split(/\r?\n/)) {
     if (!raw.trim()) continue;
@@ -120,7 +120,7 @@ function scanCurrentTurn(text, currentTurnId) {
         estimatedRequestCount = 0;
         unestimatedRequestCount = 0;
         seenCumulativeOutput.clear();
-        seenFallbackUsage.clear();
+        usageDeduplicationUnavailable = false;
       }
       continue;
     }
@@ -147,16 +147,18 @@ function scanCurrentTurn(text, currentTurnId) {
     if (payload.type === "token_count") {
       const usage = usageFrom(payload);
       if (!usage) continue;
-      const fallbackKey = `${usage.outputTokens}:${usage.reasoningTokens ?? "?"}`;
-      const duplicate = usage.totalOutputTokens !== null
-        ? seenCumulativeOutput.has(usage.totalOutputTokens)
-        : seenFallbackUsage.has(fallbackKey);
+      // Equal counts do not identify a request. Without cumulative evidence we
+      // cannot distinguish a repeated broadcast from another real response.
+      if (usage.totalOutputTokens === null && usage.outputTokens > 0) {
+        usageDeduplicationUnavailable = true;
+      }
+      const duplicate = usage.totalOutputTokens !== null &&
+        seenCumulativeOutput.has(usage.totalOutputTokens);
       if (duplicate) {
         duplicateTokenCountEvents += 1;
         continue;
       }
       if (usage.totalOutputTokens !== null) seenCumulativeOutput.add(usage.totalOutputTokens);
-      else seenFallbackUsage.add(fallbackKey);
       const tokenCountAtMs = timestampMs(record);
       const responseEndAtMs = latestModelActivityAtMs ?? tokenCountAtMs;
       if (
@@ -195,6 +197,7 @@ function scanCurrentTurn(text, currentTurnId) {
 
   return {
     foundStart,
+    usageDeduplicationUnavailable,
     startedAtMs,
     outputTokens,
     reasoningTokens: reasoningKnown ? reasoningTokens : null,
@@ -351,6 +354,94 @@ export function extractTurnCompletion(transcriptPath, currentTurnId, options = {
   });
 }
 
+// One bounded initial scan, then only appended bytes. Keep an incomplete line
+// as bytes so a write splitting a UTF-8 character can be retried losslessly.
+export function createTurnCompletionReader(transcriptPath, currentTurnId, options = {}) {
+  const fileSystem = options.fileSystem ?? fs;
+  const limit = Math.max(INITIAL_TAIL_BYTES,
+    Math.min(finiteNumber(options.maxTailBytes) ?? MAX_TAIL_BYTES, MAX_TAIL_BYTES));
+  let identity = null;
+  let offset = 0;
+  let revision = null;
+  let pending = Buffer.alloc(0);
+  let activeTurnId = null;
+  let discardLine = false;
+  let result = { available: false, reason: "turn_not_complete" };
+
+  function consume(line, commit = true) {
+    let payload;
+    try { payload = JSON.parse(line)?.payload; } catch { return; }
+    if (payload?.type === "task_started" && typeof payload.turn_id === "string") {
+      if (commit) activeTurnId = payload.turn_id;
+    } else if (payload?.type === "task_complete") {
+      const turnId = payload.turn_id || activeTurnId;
+      if (turnId === currentTurnId) result = validatedCompletion({
+        ttftMs: payload.time_to_first_token_ms,
+        completedDurationMs: payload.duration_ms,
+      });
+      if (commit && turnId === activeTurnId) activeTurnId = null;
+    }
+  }
+
+  return function readCompletion() {
+    if (typeof transcriptPath !== "string" || !transcriptPath) {
+      return { available: false, reason: "transcript_not_provided" };
+    }
+    if (typeof currentTurnId !== "string" || !currentTurnId) {
+      return { available: false, reason: "turn_not_provided" };
+    }
+    let handle;
+    try {
+      handle = fileSystem.openSync(transcriptPath, "r");
+      const stat = fileSystem.fstatSync(handle);
+      const nextIdentity = `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+      const nextRevision = `${stat.mtimeMs}:${stat.ctimeMs}`;
+      if (identity !== nextIdentity || stat.size < offset ||
+          (stat.size === offset && revision !== nextRevision)) {
+        offset = Math.max(0, stat.size - limit);
+        pending = Buffer.alloc(0);
+        activeTurnId = null;
+        discardLine = offset > 0;
+        result = { available: false, reason: "turn_not_complete" };
+      }
+      identity = nextIdentity;
+      revision = nextRevision;
+      if (stat.size - offset > limit) {
+        offset = stat.size - limit;
+        pending = Buffer.alloc(0);
+        activeTurnId = null;
+        discardLine = true;
+      }
+      while (offset < stat.size) {
+        const buffer = Buffer.allocUnsafe(Math.min(INITIAL_TAIL_BYTES, stat.size - offset));
+        const count = fileSystem.readSync(handle, buffer, 0, buffer.length, offset);
+        if (count === 0) break;
+        offset += count;
+        const chunk = Buffer.concat([pending, buffer.subarray(0, count)]);
+        let start = 0;
+        for (let end = chunk.indexOf(10); end !== -1; end = chunk.indexOf(10, start)) {
+          if (!discardLine) consume(chunk.subarray(start, end).toString("utf8"));
+          discardLine = false;
+          start = end + 1;
+        }
+        pending = Buffer.from(chunk.subarray(start));
+        if (pending.length > limit) {
+          pending = Buffer.alloc(0);
+          discardLine = true;
+        }
+      }
+      if (!discardLine && pending.length) consume(pending.toString("utf8"), false);
+      return result;
+    } catch {
+      // Retry from a fresh bounded tail after replacement or temporary loss.
+      identity = null;
+      return { available: false, reason: "transcript_unreadable" };
+    } finally {
+      if (handle !== undefined) fileSystem.closeSync(handle);
+    }
+  };
+}
+
 export function extractPreviousTurnCompletion(transcriptPath, currentTurnId, options = {}) {
   if (typeof transcriptPath !== "string" || !transcriptPath) {
     return { available: false, reason: "transcript_not_provided" };
@@ -438,6 +529,9 @@ export function extractStopMetric(transcriptPath, currentTurnId, options = {}) {
   }
   if (scanned.startedAtMs === null) {
     return { available: false, reason: "turn_start_time_missing" };
+  }
+  if (scanned.usageDeduplicationUnavailable) {
+    return { available: false, reason: "token_usage_deduplication_unavailable" };
   }
   if (scanned.tokenCountEvents === 0 || scanned.outputTokens <= 0) {
     return { available: false, reason: "output_tokens_missing" };
@@ -608,7 +702,13 @@ function readStatusRecords(directory) {
         finiteNumber(record.outputTokens) > 0 &&
         endToEndDurationForRecord(record) !== null
       ) {
-        byTurn.set(record.turnId, { ...record, __entry: entry });
+        const previous = byTurn.get(record.turnId);
+        byTurn.set(record.turnId, {
+          ...record,
+          ...preservedTiming(previous, record),
+          capturedAt: previous?.capturedAt ?? record.capturedAt,
+          __entry: entry,
+        });
       }
     } catch {}
   }
@@ -820,7 +920,7 @@ export function summarizeStatusRecords(records) {
             typeof latestTtftRecord.timingSource === "string"
               ? latestTtftRecord.timingSource
               : null,
-          isLatestTurn: latestTtftRecord.turnId === latest?.turnId,
+          isLatestTurn: latestTtftRecord === latest,
           capturedAt: latestTtftRecord.capturedAt,
         }
       : null,
@@ -840,6 +940,7 @@ export function recordStopMetric({ dataDir, sessionId, turnId, metric, capturedA
   if (!directory || !turnHash) return summarizeStatusRecords([]);
 
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const current = readStatusRecords(directory).find((record) => record.turnId === turnHash);
   const timestamp = capturedAt instanceof Date ? capturedAt.getTime() : Date.parse(capturedAt);
   const safeTimestamp = Number.isFinite(timestamp) ? timestamp : Date.now();
   const name = `${safeTimestamp}-${turnHash}-${crypto.randomBytes(5).toString("hex")}.json`;
@@ -847,7 +948,7 @@ export function recordStopMetric({ dataDir, sessionId, turnId, metric, capturedA
   const tempPath = `${finalPath}.${process.pid}.tmp`;
   const record = {
     schemaVersion: STATUS_SCHEMA_VERSION,
-    capturedAt: new Date(safeTimestamp).toISOString(),
+    capturedAt: current?.capturedAt ?? new Date(safeTimestamp).toISOString(),
     turnId: turnHash,
     source: metric.source,
     outputTokens: metric.outputTokens,
@@ -863,6 +964,7 @@ export function recordStopMetric({ dataDir, sessionId, turnId, metric, capturedA
     tokenCountEvents: metric.tokenCountEvents,
     duplicateTokenCountEvents: metric.duplicateTokenCountEvents,
     toolCallCount: metric.toolCallCount,
+    ...preservedTiming(current),
   };
   try {
     fs.writeFileSync(tempPath, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
@@ -874,6 +976,27 @@ export function recordStopMetric({ dataDir, sessionId, turnId, metric, capturedA
   }
   pruneStatusFiles(directory);
   return readSessionStatus({ dataDir, sessionId });
+}
+
+// A later provisional Stop must not erase completion evidence, including when
+// the Stop and backfill writers overlapped and produced separate atomic files.
+function preservedTiming(previous, next = {}) {
+  const completedDurationMs = completedDurationForRecord(next) ?? completedDurationForRecord(previous);
+  const ttftMs = validTtftForRecord({
+    ...next,
+    durationMs: next.durationMs ?? previous?.durationMs,
+    completedDurationMs,
+    ttftMs: validTtftForRecord(next) ?? validTtftForRecord(previous),
+  });
+  if (completedDurationMs === null && ttftMs === null) return {};
+  const source = completedDurationForRecord(next) !== null || validTtftForRecord(next) !== null
+    ? next : previous;
+  return {
+    completedDurationMs,
+    ttftMs,
+    timingSource: source?.timingSource,
+    timingCapturedAt: source?.timingCapturedAt,
+  };
 }
 
 function writeReplacementStatusRecord(directory, turnHash, record, nowMs = Date.now()) {
@@ -1014,7 +1137,7 @@ export function formatStatusLine(status) {
   if (!status?.available || !status.latest || !status.session) return null;
   const ttft = status.mostRecentTtft;
   const ttftSuffix = ttft
-    ? ` · ${ttft.isLatestTurn ? "TTFT" : "上轮 TTFT"} ${compactDuration(ttft.ttftMs)}`
+    ? ` · ${ttft.isLatestTurn ? "TTFT" : "最近有效 TTFT"} ${compactDuration(ttft.ttftMs)}`
     : "";
   const nativeOtelSuffix = status.nativeOtel?.available
     ? ` · 原生生成 TPS ≈${status.nativeOtel.approximateTps.toFixed(1)}（TBT 推算·${

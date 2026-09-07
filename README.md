@@ -7,7 +7,7 @@ TTFT 的本地插件。显式启用的 localhost OTel 实验还可读取 Codex �
 标注、未归轮的生成速度参考。
 
 ```text
-⚡ 非推理输出吞吐 16.2 tok/s · 会话 15.8 tok/s · 非推理 2.5k tok · 推理 2.7k tok · 总输出 5.2k tok · 轮耗时 2m36s · 上轮 TTFT 6.8s
+⚡ 非推理输出吞吐 16.2 tok/s · 会话 15.8 tok/s · 非推理 2.5k tok · 推理 2.7k tok · 总输出 5.2k tok · 轮耗时 2m36s · 最近有效 TTFT 6.8s
 ```
 
 > [!IMPORTANT]
@@ -44,7 +44,9 @@ TTFT 的本地插件。显式启用的 localhost OTel 实验还可读取 Codex �
 3. 同步处理器从 transcript 尾部读取 256 KiB；找不到当前 `task_started` 时逐步扩大，最多读取
    16 MiB，不会在正常模式下复制或保存整份会话正文。
 4. 解析当前 turn 的 `task_started`、模型输出项和 `token_count.last_token_usage`。
-5. 使用累计 `total_token_usage.output_tokens` 去除 Codex 重复广播的 token 快照。
+5. 使用累计 `total_token_usage.output_tokens` 去除 Codex 重复广播的 token 快照。非零 usage
+   缺少累计值时无法可靠区分重复广播与新请求，该轮返回 `token_usage_deduplication_unavailable`，
+   不显示速率、不写入会话统计；不会仅因两个请求的 token 数相同而合并它们。
 6. 校验 reasoning 拆分并计算非推理 output；同步状态行先使用 Stop 墙钟得到当轮端到端值。
 7. 旧版的请求区间重建仍写入 JSON 供兼容诊断，但 transcript 没有稳定的逐请求生命周期
    契约，因此它不再进入默认状态行。
@@ -52,10 +54,12 @@ TTFT 的本地插件。显式启用的 localhost OTel 实验还可读取 Codex �
    回填，就为上一轮补写完成时长和 TTFT。这让旧会话或偶发异步失败能在下一轮自动恢复。
 9. 同步处理器将哈希 ID 和数字状态原子写入 `PLUGIN_DATA`，再通过严格 JSON `systemMessage`
    把指标显示为 Codex UI 事件。
-10. 后台处理器最多等待 10 秒；当前 turn 的 `task_complete` 落盘后，分别校验并回填 TTFT、
+10. 后台处理器最多等待 10 秒；首次最多扫描 16 MiB 尾部，后续只读取追加的字节，文件未变化
+    时跳过内容读取。支持半行写入、文件截断和替换。当前 turn 的 `task_complete` 落盘后，分别校验并回填 TTFT、
     完成时长、哈希 turn ID 和时间来源。完成时长会替代 Stop 墙钟成为该轮及会话的权威
     分母；缺少其中一个 timing 不会丢弃另一个。处理器输出空 JSON，不启动新 turn，也不给
-    模型增加上下文。
+    模型增加上下文。同一 turn 再次触发 Stop 时保留已回填的 timing 和原始记录时间，避免
+    精确分母丢失或旧轮次被误排到最新。
 
 Hook 命令会先运行会话启动时的版本目录；如果插件升级已经清理该目录，则自动调用
 `PLUGIN_DATA/runtime/dispatch.mjs` 中最近一次成功保存的快照。两处都不可用或系统找不到
@@ -63,7 +67,7 @@ Node 时只返回 `{}`，不会用退出码 1 干扰旧会话。
 
 由于当前轮 completion timing 在同步 Stop 之后才出现，第一条状态行使用接近完成时点的
 Stop 墙钟，且不会包含自己的 TTFT。后台回填后，`$tps` 会改用精确完成时长；下一轮自动
-状态行会将最近有效值标成“上轮 TTFT”。即使后台处理器没有运行，下一次同步 Stop 也会
+状态行会将最近有效值标成“最近有效 TTFT”（可能跨过缺失 timing 的轮次）。即使后台处理器没有运行，下一次同步 Stop 也会
 补偿回填上一轮。
 
 这条链路依赖 Codex transcript 的事件顺序，而 transcript 不是承诺稳定的公开数据格式。
@@ -208,7 +212,7 @@ doctor 会分别检查 receiver 是否仍存活、logs/metrics exporter 是否�
 reasoning 拆分完整：
 
 ```text
-⚡ 非推理输出吞吐 12.0 tok/s · 会话 11.5 tok/s · 非推理 144 tok · 推理 120 tok · 总输出 264 tok · 轮耗时 12.0s · 上轮 TTFT 3.9s
+⚡ 非推理输出吞吐 12.0 tok/s · 会话 11.5 tok/s · 非推理 144 tok · 推理 120 tok · 总输出 264 tok · 轮耗时 12.0s · 最近有效 TTFT 3.9s
 ```
 
 reasoning 拆分缺失时降级：
@@ -224,7 +228,7 @@ output”，而不是服务端纯解码速度。不同提示、推理强度、�
 顶层 `requestCoverageCompleteForThroughput` 表示该诊断是否覆盖完整；旧字段
 `requestThroughputIncludesTtft` 仅作为兼容别名保留，不是对“本轮是否含 TTFT”的探测结果。
 
-如果当前最新状态已经由后台补全，`$tps` 会把同一个值标成 `TTFT`，而不是“上轮 TTFT”。
+如果当前最新状态已经由后台补全，`$tps` 会把同一个值标成 `TTFT`，而不是“最近有效 TTFT”。
 若后台超时、会话立即关闭或 transcript 格式变化，TTFT 会保持缺失，不会显示为零。
 
 ## 数据与隐私
@@ -290,7 +294,7 @@ reasoning 算进分子，或只使用首 token 到末 token 的纯解码时间�
 ### 为什么第一轮没有 TTFT
 
 Codex 在同步 Stop 完成后才把 `task_complete.time_to_first_token_ms` 写入 transcript。插件
-不会用估算值替代它；后台回填后可用 `$tps` 查询，下一轮自动行会显示“上轮 TTFT”。
+不会用估算值替代它；后台回填后可用 `$tps` 查询，下一轮自动行会显示“最近有效 TTFT”。
 
 ### 为什么 OTel 参考仍不叫本轮 TPS
 
@@ -304,6 +308,7 @@ request/turn ID。多请求被合并进 histogram，指标又在进程结束附�
 ```powershell
 npm test
 npm run release:check
+npm run smoke:install
 cd plugins/codex-tps-plus
 node scripts/doctor.mjs --json
 node scripts/analyze-transcript.mjs <transcript.jsonl>
@@ -315,7 +320,10 @@ node scripts/status.mjs --otel-capture <otel-capture-directory> --json
 ```
 
 仓库根目录是 marketplace，插件本体位于 `plugins/codex-tps-plus`。GitHub Actions 在
-Windows、macOS、Linux 上分别使用 Node.js 22 和 24 运行测试与发布检查。
+Windows、macOS、Linux 上分别使用 Node.js 22 和 24 运行测试、候选检查和实际 CLI 安装/升级
+冒烟验证。冒烟验证固定 Codex CLI 0.153.4，使用隔离的临时 `CODEX_HOME`，不会发送模型请求。
+正式标签构建还运行 `npm run release:verify`，检查工作区干净且标签指向当前提交。候选检查
+不会创建或禁止标签；正式发布步骤见 [发布检查清单](RELEASE-CHECKLIST.md)。
 
 仓库保留第一阶段的脱敏 transcript 探针，并将 localhost OTLP 接收器作为显式实验子命令。
 它们不属于生产 Hook 注册项，也不会自动启用。

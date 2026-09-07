@@ -1,13 +1,37 @@
 # Release checklist
 
-## Local 0.6.0 candidate boundary
+## 0.6.0 candidate boundary
 
-- [x] The repository, plugin package, and plugin manifest identify the local-only candidate `0.6.0`.
+- [x] The repository, plugin package, and plugin manifest identify the candidate `0.6.0`.
 - [x] The accuracy contract is frozen in `PLAN-0.6.0.md`.
 - [x] Local unit, Hook contract, privacy, retention, doctor, and marketplace release checks pass.
 - [x] No `v0.6.0` tag is created.
-- [x] No branch, tag, package, marketplace update, or GitHub Release is pushed or published remotely.
-- [ ] Cross-platform CI and public-install smoke tests are intentionally deferred until a future remote release is requested.
+- [x] Candidate branch CI is allowed; main, release tags, and GitHub Releases remain unchanged during trial.
+- [x] Automated installation smoke uses a disposable CODEX_HOME, real Codex CLI 0.153.4, and synthetic Hook inputs.
+- [x] Local Windows install, 0.5.0 upgrade, completion backfill, repeated Stop, and removed-cache recovery pass.
+- [ ] The exact candidate commit passes the Windows/macOS/Linux matrix on Node.js 22 and 24.
+- [ ] Interactive new-session/resumed-session trial passes before promotion to main.
+
+## Check modes and promotion
+
+`npm run release:check` (or `-- --candidate`) validates package structure, consistent unsuffixed
+versions, Hook definitions, and tracked-file hygiene. It does not require or forbid a local release
+tag, so fetching historical tags cannot break candidate or main CI. It never publishes anything.
+
+`npm run release:verify` performs the same checks and additionally requires a clean checkout and
+`v<package.version>` pointing to HEAD. In tag CI, the triggering tag must match the package version.
+The workflow fetches full history and runs this mode for tag pushes. Regression tests exercise missing
+tags, dirty trees, mismatched tags, and tags pointing to another commit.
+
+After trial approval: merge the validated changes to main, rerun the matrix, tag the intended commit,
+and require the tag matrix (including `release:verify`) to pass before publishing a GitHub Release.
+No automatic release publication is configured.
+
+`npm run smoke:install` requires Git, tar, and globally installed `@openai/codex@0.153.4` (or
+`CODEX_CLI_JS` pointing to its `bin/codex.js`). It installs 0.5.0 from the local tagged archive,
+upgrades through a configured local marketplace to the working candidate, checks the installed cache,
+and exercises the actual shell Hook commands. It does not send a model request or replace interactive
+TUI validation. The default test workflow runs this smoke on every matrix entry.
 
 ## Product contract
 

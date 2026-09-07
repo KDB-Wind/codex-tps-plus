@@ -11,6 +11,8 @@
   "scripts": {
     "test": "npm --prefix plugins/codex-tps-plus test",
     "doctor": "npm --prefix plugins/codex-tps-plus run doctor --",
-    "release:check": "node tools/release-check.mjs"
+    "release:check": "node tools/release-check.mjs",
+    "release:verify": "node tools/release-check.mjs --release",
+    "smoke:install": "node tools/install-smoke.mjs"
   }
 }

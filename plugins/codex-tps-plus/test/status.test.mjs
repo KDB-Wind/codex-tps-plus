@@ -505,7 +505,7 @@ test("background Stop worker backfills TTFT and always remains informational", a
   fs.rmSync(temp, { recursive: true, force: true });
 });
 
-test("a new synchronous Stop line labels the last completed timing as previous-turn TTFT", () => {
+test("a new synchronous Stop line labels earlier completed timing as most recent valid TTFT", () => {
   const status = summarizeStatusRecords([
     {
       turnId: "previous",
@@ -526,7 +526,7 @@ test("a new synchronous Stop line labels the last completed timing as previous-t
   ]);
   assert.equal(status.latest.ttftMs, null);
   assert.equal(status.mostRecentTtft.isLatestTurn, false);
-  assert.match(formatStatusLine(status), /· 上轮 TTFT 0\.8s$/);
+  assert.match(formatStatusLine(status), /· 最近有效 TTFT 0\.8s$/);
 });
 
 test("synchronous Stop recovers the previous turn TTFT when the async hook did not run", () => {
@@ -578,7 +578,7 @@ test("synchronous Stop recovers the previous turn TTFT when the async hook did n
   assert.equal(result.status.mostRecentTtft.ttftMs, 900);
   assert.equal(result.status.mostRecentTtft.timingSource, "task_complete_sync_recovery");
   assert.equal(result.status.mostRecentTtft.isLatestTurn, false);
-  assert.match(result.line, /· 上轮 TTFT 0\.9s$/);
+  assert.match(result.line, /· 最近有效 TTFT 0\.9s$/);
   fs.rmSync(temp, { recursive: true, force: true });
 });
 

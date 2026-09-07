@@ -8,7 +8,12 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const pluginRoot = path.join(root, "plugins", "codex-tps-plus");
-const expectedVersion = "0.6.0";
+const args = process.argv.slice(2);
+const mode = args.length === 0 ? "candidate"
+  : args.length === 1 && ["--candidate", "--release"].includes(args[0]) ? args[0].slice(2) : null;
+assert.ok(mode, "usage: release-check.mjs [--candidate|--release]");
+const expectedVersion = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version;
+assert.match(expectedVersion, /^\d+\.\d+\.\d+$/, "release version must be an unsuffixed semver");
 
 function json(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
@@ -24,7 +29,6 @@ const rootPackage = json("package.json");
 const pluginPackage = json(path.join("plugins", "codex-tps-plus", "package.json"));
 const hooks = json(path.join("plugins", "codex-tps-plus", "hooks", "hooks.json"));
 const changelog = text("CHANGELOG.md");
-const releaseChecklist = text("RELEASE-CHECKLIST.md");
 
 assert.equal(marketplace.name, "kdb-wind");
 assert.equal(marketplace.plugins.length, 1);
@@ -48,15 +52,15 @@ assert.match(
   changelog,
   new RegExp(`^## ${expectedVersion.replace(/\./g, "\\.")} - \\d{4}-\\d{2}-\\d{2}$`, "m")
 );
-assert.match(
-  releaseChecklist,
-  new RegExp("local-only candidate `" + expectedVersion.replace(/\./g, "\\.") + "`")
-);
-assert.equal(
-  execFileSync("git", ["tag", "--list", `v${expectedVersion}`], { cwd: root, encoding: "utf8" }).trim(),
-  "",
-  `local-only candidate must not create v${expectedVersion}`
-);
+if (mode === "release") {
+  const git = (...arguments_) => execFileSync("git", arguments_, { cwd: root, encoding: "utf8" }).trim();
+  assert.equal(git("status", "--porcelain"), "", "release checkout must be clean");
+  assert.equal(git("rev-parse", `refs/tags/v${expectedVersion}^{commit}`), git("rev-parse", "HEAD"),
+    `v${expectedVersion} must point at the checked-out commit`);
+  if (process.env.GITHUB_REF_TYPE === "tag") {
+    assert.equal(process.env.GITHUB_REF_NAME, `v${expectedVersion}`, "tag and package version differ");
+  }
+}
 
 const stopGroups = hooks?.hooks?.Stop;
 assert.deepEqual(Object.keys(hooks?.hooks || {}), ["Stop"]);
@@ -112,5 +116,5 @@ for (const file of tracked) {
 assert.deepEqual(localPathLeaks, [], `local absolute paths remain in: ${localPathLeaks.join(", ")}`);
 
 process.stdout.write(
-  `${JSON.stringify({ ok: true, version: expectedVersion, trackedFiles: tracked.length })}\n`
+  `${JSON.stringify({ ok: true, mode, version: expectedVersion, trackedFiles: tracked.length })}\n`
 );

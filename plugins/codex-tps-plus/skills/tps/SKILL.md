@@ -23,7 +23,7 @@ fallback; do not infer or mix a non-reasoning session average from that record.
 
 TTFT comes from `task_complete.time_to_first_token_ms`. Completion duration and TTFT are validated
 and backfilled independently, so either may be available without the other. The first automatic
-line cannot contain its own TTFT; a later query can, and the next line may label it `上轮 TTFT`.
+line cannot contain its own TTFT; a later query can, and the next line may label it `最近有效 TTFT`.
 The session TTFT mean is arithmetic across turns with a valid TTFT, not token-weighted.
 
 Only discuss `requestThroughput` when the user asks for diagnostics. It uses non-reasoning output

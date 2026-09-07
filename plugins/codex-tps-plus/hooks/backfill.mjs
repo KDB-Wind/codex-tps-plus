@@ -6,7 +6,7 @@
 
 import {
   backfillTurnCompletion,
-  extractTurnCompletion,
+  createTurnCompletionReader,
   resolvePluginDataDir,
 } from "../scripts/status-core.mjs";
 import { isDirectRun } from "../scripts/direct-run.mjs";
@@ -46,11 +46,12 @@ export async function waitAndBackfill(input, options = {}) {
   const pollMs = positiveInteger(options.pollMs, 100, 1_000);
   const startedAt = Date.now();
   const dataDir = options.dataDir || resolvePluginDataDir(options.env);
+  const readCompletion = createTurnCompletionReader(input?.transcript_path, input?.turn_id, {
+    maxTailBytes: options.maxTailBytes,
+  });
   let lastReason = "turn_not_complete";
   do {
-    const completion = extractTurnCompletion(input?.transcript_path, input?.turn_id, {
-      maxTailBytes: options.maxTailBytes,
-    });
+    const completion = readCompletion();
     if (completion.available) {
       const result = backfillTurnCompletion({
         dataDir,

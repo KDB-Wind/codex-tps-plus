@@ -2,6 +2,15 @@
 
 ## 0.6.0 - 2026-09-04
 
+- Fail closed when nonzero usage lacks cumulative deduplication evidence instead of merging
+  independent requests with equal token counts.
+- Preserve completion timing and original turn order across repeated Stop writes, including
+  overlapping provisional and backfill records.
+- Read completion backfill incrementally after one bounded tail scan, skipping unchanged files
+  and recovering from partial UTF-8 writes, truncation, and replacement.
+- Label older TTFT as the most recent valid measurement instead of claiming it is the previous turn.
+- Separate candidate structure checks from exact-tag release verification and add real CLI installation,
+  0.5.0 upgrade, and removed-cache Hook smoke checks to all six CI matrix entries.
 - Make non-reasoning output divided by end-to-end turn duration the primary automatic and session
   throughput, while keeping total output and reasoning counts explicit.
 - Treat a complete all-reasoning turn as a valid zero non-reasoning rate whose duration remains in
@@ -17,8 +26,8 @@
   replacement, mixed session samples, stable runtime, and strict Hook output.
 - Correct second-based timestamp fallbacks in the probe metric model and forward root doctor CLI
   arguments so `npm run doctor -- --json` reaches the doctor's JSON mode as documented.
-- Prepare this version as a local-only candidate with no tag, push, marketplace update, or remote
-  release.
+- Prepare this version as a trial candidate; candidate branches may run remote CI, while main,
+  release tags, and GitHub Releases remain unchanged until promotion.
 
 ## 0.5.0 - 2026-09-01
 
