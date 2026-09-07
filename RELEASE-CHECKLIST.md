@@ -9,7 +9,11 @@
 - [x] Candidate branch CI is allowed; main, release tags, and GitHub Releases remain unchanged during trial.
 - [x] Automated installation smoke uses a disposable CODEX_HOME, real Codex CLI 0.153.4, and synthetic Hook inputs.
 - [x] Local Windows install, 0.5.0 upgrade, completion backfill, repeated Stop, and removed-cache recovery pass.
-- [ ] The exact candidate commit passes the Windows/macOS/Linux matrix on Node.js 22 and 24.
+- [x] Candidate `cb294b6` passes the Windows/macOS/Linux matrix on Node.js 22 and 24
+      ([run 34089731796](https://github.com/KDB-Wind/codex-tps-plus/actions/runs/34089731796));
+      rerun this gate for any later code changes.
+- [x] The fixed production files are installed locally with a distinct cachebuster, content checked,
+      and the stable runtime is activated; doctor reports zero failed checks.
 - [ ] Interactive new-session/resumed-session trial passes before promotion to main.
 
 ## Check modes and promotion
