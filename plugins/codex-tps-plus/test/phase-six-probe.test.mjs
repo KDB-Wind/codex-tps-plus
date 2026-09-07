@@ -719,8 +719,9 @@ test("loopback WebSocket transport frames JSON without exposing transport errors
 });
 
 class FakeTransport {
-  constructor({ routeServerRequest = false } = {}) {
+  constructor({ routeServerRequest = false, onCompleted = () => {} } = {}) {
     this.routeServerRequest = routeServerRequest;
+    this.onCompleted = onCompleted;
     this.sent = [];
     this.connected = false;
     this.closed = false;
@@ -782,6 +783,7 @@ class FakeTransport {
             method: "turn/completed",
             params: { threadId: "thread-live", turn: { id: "turn-live", status: "completed" } },
           });
+          this.onCompleted();
         }, 2);
       });
     } else if (message.method === "thread/unsubscribe") {
@@ -799,11 +801,17 @@ class FakeTransport {
 
 test("runner performs only allowed sends and keeps real E1 status pending", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-tps-plus-phase-six-runner-"));
-  const fake = new FakeTransport();
+  const controller = new AbortController();
+  const fake = new FakeTransport({ onCompleted: () => controller.abort() });
+  let observedAt = Date.parse("2026-09-01T00:00:00.000Z");
   const result = await runProbe({
     endpoint: "ws://127.0.0.1:4319",
     out: path.join(temp, "run"),
-    durationMs: 30,
+    // Finish on the observed event; clock resolution and runner speed must not
+    // decide whether the synthetic completed turn has a positive duration.
+    durationMs: 5000,
+    signal: controller.signal,
+    clock: () => ++observedAt,
     requestTimeoutMs: 100,
     maxBytes: 16_384,
     transportFactory: () => fake,

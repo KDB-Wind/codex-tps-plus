@@ -358,6 +358,7 @@ export async function runProbe(options = {}) {
     },
   };
   const state = configureStateForRun(new ProbeState({
+    clock: options.clock,
     schemaVersion: options.schemaVersion || "v2",
     schemaVersionSource: options.schemaVersionSource || "caller_supplied",
     threadId: options.threadId || null,
